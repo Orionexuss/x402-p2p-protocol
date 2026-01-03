@@ -1,5 +1,5 @@
 [workspace]
-members = [
+members = ["cli",
     "peer",
 ]
 resolver = "2"
