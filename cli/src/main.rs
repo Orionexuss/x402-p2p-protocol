@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use std::fs;
 
 #[derive(Parser)]
 #[command(name = "x402")]
@@ -31,6 +32,20 @@ fn main() {
     match cli.command {
         Commands::Inspect { file } => {
             println!("Inspecting torrent file: {}", file);
+
+            // Read the torrent file
+            match fs::read(&file) {
+                Ok(data) => {
+                    if let Err(e) = peer::decode_torrent(&data) {
+                        eprintln!("Error decoding torrent: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error reading file {}: {}", file, e);
+                    std::process::exit(1);
+                }
+            }
         }
         Commands::Serve { price, listen } => {
             println!(
