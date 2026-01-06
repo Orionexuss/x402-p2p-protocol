@@ -31,19 +31,44 @@ fn main() {
 
     match cli.command {
         Commands::Inspect { file } => {
-            println!("Inspecting torrent file: {}", file);
-
-            // Read the torrent file
-            match fs::read(&file) {
-                Ok(data) => {
-                    if let Err(e) = peer::decode_torrent(&data) {
-                        eprintln!("Error decoding torrent: {}", e);
+            // Check if it's a magnet link or a .torrent file
+            if file.starts_with("magnet:?") {
+                println!("Inspecting magnet link...");
+                match peer::MagnetLink::parse(&file) {
+                    Ok(magnet) => {
+                        println!("Info Hash: {}", magnet.info_hash);
+                        if let Some(name) = &magnet.display_name {
+                            println!("Name: {}", name);
+                        }
+                        if !magnet.trackers.is_empty() {
+                            println!("Trackers:");
+                            for tracker in &magnet.trackers {
+                                println!("  - {}", tracker);
+                            }
+                        }
+                        if let Some(length) = magnet.exact_length {
+                            println!("Size: {} bytes", length);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Error parsing magnet link: {}", e);
                         std::process::exit(1);
                     }
                 }
-                Err(e) => {
-                    eprintln!("Error reading file {}: {}", file, e);
-                    std::process::exit(1);
+            } else {
+                println!("Inspecting torrent file: {}", file);
+                // Read the torrent file
+                match fs::read(&file) {
+                    Ok(data) => {
+                        if let Err(e) = peer::decode_torrent(&data) {
+                            eprintln!("Error decoding torrent: {}", e);
+                            std::process::exit(1);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Error reading file {}: {}", file, e);
+                        std::process::exit(1);
+                    }
                 }
             }
         }
