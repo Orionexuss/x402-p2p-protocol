@@ -1,43 +1,23 @@
-use hex;
 use hex::encode;
-use serde::{Deserialize, Serialize};
 use serde_bencode;
 
 use crate::torrent::infohash::derive_infohash;
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct Torrent {
-    pub announce: String,
-    pub info: Info,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct Info {
-    pub name: String,
-
-    #[serde(rename = "piece length")]
-    pub plength: usize,
-
-    pub pieces: serde_bytes::ByteBuf,
-
-    #[serde(default)]
-    pub length: Option<usize>,
-}
+use crate::torrent::types::{Info, Torrent};
 
 /// Parse a torrent file and return the Torrent struct
-pub fn parse_torrent(data: &[u8]) -> Result<Torrent, String> {
+fn parse_torrent(data: &[u8]) -> Result<Torrent, String> {
     serde_bencode::from_bytes(data).map_err(|e| format!("Failed to decode torrent: {}", e))
 }
 
 /// Calculate the info hash for a torrent
-pub fn calculate_info_hash(torrent: &Torrent) -> Result<String, String> {
+fn calculate_info_hash(torrent: &Torrent) -> Result<String, String> {
     let info_bytes = serde_bencode::to_bytes(&torrent.info)
         .map_err(|e| format!("Failed to encode info dict: {}", e))?;
     let info_hash = derive_infohash(&info_bytes);
     Ok(encode(info_hash))
 }
 
-/// Decode and print torrent information (for CLI usage)
+/// Decode and print torrent information
 pub fn decode_torrent(data: &[u8]) -> Result<(), String> {
     let decoded = parse_torrent(data)?;
     let info_hash = calculate_info_hash(&decoded)?;
@@ -61,8 +41,6 @@ mod tests {
 
     // Helper function to create a minimal valid torrent file in bencode format
     fn create_test_torrent() -> Vec<u8> {
-        // This is a manually crafted bencode torrent file:
-        // d8:announce26:http://tracker.example.com4:infod6:lengthi1024e4:name9:test.txt12:piece lengthi16384e6:pieces20:12345678901234567890ee
         let torrent = Torrent {
             announce: "http://tracker.example.com".to_string(),
             info: Info {

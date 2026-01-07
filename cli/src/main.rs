@@ -34,7 +34,7 @@ fn main() {
             // Check if it's a magnet link or a .torrent file
             if file.starts_with("magnet:?") {
                 println!("Inspecting magnet link...");
-                match peer::MagnetLink::parse(&file) {
+                match x402_core::MagnetLink::parse(&file) {
                     Ok(magnet) => {
                         println!("Info Hash: {}", magnet.info_hash);
                         if let Some(name) = &magnet.display_name {
@@ -60,7 +60,7 @@ fn main() {
                 // Read the torrent file
                 match fs::read(&file) {
                     Ok(data) => {
-                        if let Err(e) = peer::decode_torrent(&data) {
+                        if let Err(e) = x402_core::decode_torrent(&data) {
                             eprintln!("Error decoding torrent: {}", e);
                             std::process::exit(1);
                         }
