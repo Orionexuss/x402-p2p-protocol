@@ -73,10 +73,27 @@ fn main() {
             }
         }
         Commands::Serve { price, listen } => {
-            println!(
-                "Starting x402 client listening on {:?} with price {}",
-                listen, price
-            );
+            let address = listen.unwrap_or_else(|| "0.0.0.0:6881".to_string());
+            let parts: Vec<&str> = address.split(':').collect();
+            
+            let (addr, port) = if parts.len() == 2 {
+                (parts[0].to_string(), parts[1].parse::<u16>().unwrap_or(6881))
+            } else {
+                ("0.0.0.0".to_string(), 6881)
+            };
+
+            println!("Starting x402 seeder on {}:{} with price {}", addr, port, price);
+            
+            let mut seeder = x402_core::Seeder::new(addr, port);
+            
+            // TODO: Load torrents from config/database
+            // For now, you need to add torrents manually
+            println!("Note: Add torrents to seed using seeder.add_torrent_hex()");
+            
+            if let Err(e) = seeder.listen() {
+                eprintln!("Error starting seeder: {}", e);
+                std::process::exit(1);
+            }
         }
         Commands::Download { source } => {
             println!(
