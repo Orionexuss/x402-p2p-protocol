@@ -222,3 +222,7 @@ cargo run --bin cli -- serve
 # Parse a torrent file
 cargo run --bin cli -- parse <torrent-file>
 ```
+
+---
+
+> **⚠️ This project is still in active development. Features, APIs, and documentation may change frequently.**
