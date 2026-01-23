@@ -6,3 +6,5 @@ edition = "2024"
 [dependencies]
 clap = { version = "4.5.53", features = ["derive"] }
 x402-core = { path = "../x402-core" }
+tokio = { version = "1", features = ["full"] }
+hex = "0.4.3"

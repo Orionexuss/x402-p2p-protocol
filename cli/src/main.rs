@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand};
 use std::fs;
+use x402_core::torrent::parser::calculate_info_hash;
 
 #[derive(Parser)]
 #[command(name = "x402")]
@@ -22,11 +23,18 @@ enum Commands {
         listen: Option<String>,
     },
     Download {
-        source: String, // magnet link o .torrent
+        source: String, // magnet link or .torrent file
+
+        #[arg(long, default_value = "http://localhost:6969")]
+        tracker: String,
+
+        #[arg(long, short = 'o')]
+        output: Option<String>,
     },
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let cli = Cli::parse();
 
     match cli.command {
@@ -90,7 +98,7 @@ fn main() {
                 addr, port, price
             );
 
-            let mut seeder = x402_core::Seeder::new(addr, port);
+            let seeder = x402_core::Seeder::new(addr, port);
 
             // TODO: Load torrents from config/database
             // For now, you need to add torrents manually
@@ -101,11 +109,93 @@ fn main() {
                 std::process::exit(1);
             }
         }
-        Commands::Download { source } => {
-            println!(
-                "Downloading files using x402 protocol from source: {}",
-                source
+        Commands::Download {
+            source,
+            tracker,
+            output,
+        } => {
+            println!("x402 Download");
+            println!("Source: {}", source);
+            println!("Tracker: {}", tracker);
+            println!();
+
+            // Parse source (magnet or .torrent file)
+            let (info_hash, file_name, total_size) = if source.starts_with("magnet:?") {
+                // Parse magnet link
+                match x402_core::MagnetLink::parse(&source) {
+                    Ok(magnet) => {
+                        println!("Parsed magnet link:");
+                        println!("  Info Hash: {}", magnet.info_hash);
+                        if let Some(name) = &magnet.display_name {
+                            println!("  Name: {}", name);
+                        }
+                        if let Some(length) = magnet.exact_length {
+                            println!("  Size: {} bytes", length);
+                        }
+                        println!();
+
+                        // Decode hex info hash
+                        let info_hash_bytes = hex::decode(&magnet.info_hash)
+                            .expect("Invalid info hash in magnet link");
+                        let mut info_hash = [0u8; 20];
+                        info_hash.copy_from_slice(&info_hash_bytes);
+
+                        (
+                            info_hash,
+                            magnet
+                                .display_name
+                                .unwrap_or_else(|| "download".to_string()),
+                            magnet.exact_length.unwrap_or(0),
+                        )
+                    }
+                    Err(e) => {
+                        eprintln!("Error parsing magnet link: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+            } else {
+                // Parse .torrent file
+                match fs::read(&source) {
+                    Ok(data) => match x402_core::decode_torrent(&data) {
+                        Ok(torrent) => {
+                            println!("Parsed torrent file:");
+                            println!("  Name: {}", torrent.info.name);
+                            println!("  Pieces: {}", torrent.info.pieces.len() / 20);
+                            println!("  Total Size: {} bytes", torrent.total_length());
+                            println!();
+
+                            let torrent_length = torrent.total_length();
+                            let info_hash = calculate_info_hash(&torrent);
+
+                            (info_hash, torrent.info.name, torrent_length)
+                        }
+                        Err(e) => {
+                            eprintln!("Error decoding torrent: {}", e);
+                            std::process::exit(1);
+                        }
+                    },
+                    Err(e) => {
+                        eprintln!("Error reading file {}: {}", source, e);
+                        std::process::exit(1);
+                    }
+                }
+            };
+
+            // Determine output path
+            let output_path = output.unwrap_or_else(|| file_name.clone());
+
+            // Create leecher and start download
+            let leecher = x402_core::Leecher::new(
+                info_hash,
+                tracker,
+                std::path::PathBuf::from(output_path),
+                total_size,
             );
+
+            if let Err(e) = leecher.download().await {
+                eprintln!("Download failed: {}", e);
+                std::process::exit(1);
+            }
         }
     }
 }
