@@ -9,30 +9,28 @@ fn parse_torrent(data: &[u8]) -> Result<Torrent, String> {
     serde_bencode::from_bytes(data).map_err(|e| format!("Failed to decode torrent: {}", e))
 }
 
-/// Calculate the info hash for a torrent
-fn calculate_info_hash(torrent: &Torrent) -> Result<String, String> {
-    let info_bytes = serde_bencode::to_bytes(&torrent.info)
-        .map_err(|e| format!("Failed to encode info dict: {}", e))?;
-    let info_hash = derive_infohash(&info_bytes);
-    Ok(encode(info_hash))
+/// Calculate the info hash for a torrent and return as [u8; 20]
+pub fn calculate_info_hash(torrent: &Torrent) -> [u8; 20] {
+    let info_bytes = serde_bencode::to_bytes(&torrent.info).expect("Failed to encode info dict");
+    derive_infohash(&info_bytes)
 }
 
 /// Decode and print torrent information
-pub fn decode_torrent(data: &[u8]) -> Result<(), String> {
+pub fn decode_torrent(data: &[u8]) -> Result<Torrent, String> {
     let decoded = parse_torrent(data)?;
-    let info_hash = calculate_info_hash(&decoded)?;
+    let info_hash = calculate_info_hash(&decoded);
 
     println!("Tracker URL: {}", decoded.announce);
     println!("Info:");
     println!("  Name: {}", decoded.info.name);
     println!("  Piece Length: {}", decoded.info.plength);
-    println!("  Number of Pieces: {}", decoded.info.pieces.len() / 20);
+    println!("  Number of Pieces: {}", decoded.num_pieces());
     if let Some(length) = decoded.info.length {
         println!("  File Length: {} bytes", length);
     }
-    println!("Info Hash: {}", info_hash);
+    println!("Info Hash: {}", encode(info_hash));
 
-    Ok(())
+    Ok(decoded)
 }
 
 #[cfg(test)]
@@ -78,26 +76,13 @@ mod tests {
     }
 
     #[test]
-    fn test_calculate_info_hash() {
-        let data = create_test_torrent();
-        let torrent = parse_torrent(&data).unwrap();
-        let info_hash = calculate_info_hash(&torrent);
-
-        assert!(info_hash.is_ok());
-        let hash = info_hash.unwrap();
-        // SHA-1 hash is 40 hex characters
-        assert_eq!(hash.len(), 40);
-        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
-    }
-
-    #[test]
     fn test_info_hash_consistency() {
         // Same torrent should produce same info hash
         let data = create_test_torrent();
         let torrent = parse_torrent(&data).unwrap();
 
-        let hash1 = calculate_info_hash(&torrent).unwrap();
-        let hash2 = calculate_info_hash(&torrent).unwrap();
+        let hash1 = calculate_info_hash(&torrent);
+        let hash2 = calculate_info_hash(&torrent);
 
         assert_eq!(hash1, hash2);
     }

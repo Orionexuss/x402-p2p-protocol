@@ -29,7 +29,7 @@ impl Proof {
 
     /// Verify the proof against expected data
     pub fn verify(&self, data: &[u8]) -> bool {
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
         let computed_hash = Sha256::digest(data);
         computed_hash.as_slice() == self.hash.as_slice()
     }
@@ -39,59 +39,42 @@ impl Proof {
 #[derive(Debug, Clone, PartialEq)]
 pub enum X402Message {
     /// Initial handshake with peer ID and public key
-    Handshake {
-        peer_id: PeerId,
-        pubkey: PubKey,
-    },
-    
+    Handshake { peer_id: PeerId, pubkey: PubKey },
+
     /// Authentication proof via signature
-    AuthProof {
-        signature: Signature,
-    },
-    
+    AuthProof { signature: Signature },
+
     /// Request price for a specific piece
-    PriceInquiry {
-        piece_id: u32,
-    },
-    
+    PriceInquiry { piece_id: u32 },
+
     /// Offer price for a specific piece
-    PriceOffer {
-        piece_id: u32,
-        fee: u64,
-    },
-    
+    PriceOffer { piece_id: u32, fee: u64 },
+
     /// Payment locked with hashlock (HTLC-style)
     LockedPayment {
         piece_id: u32,
         amount: u64,
         hashlock: Hash,
     },
-    
+
     /// Request a specific block of a piece
-    RequestBlock {
-        piece_id: u32,
-        block: u32,
-    },
-    
+    RequestBlock { piece_id: u32, block: u32 },
+
     /// Piece chunk data with proof
     PieceChunk {
         block: u32,
         data: Vec<u8>,
         proof: Proof,
     },
-    
+
     /// Reveal preimage to unlock payment
-    PaymentReveal {
-        preimage: Hash,
-    },
-    
+    PaymentReveal { preimage: Hash },
+
     /// Acknowledge payment received
     PaymentAck,
-    
+
     /// Announce having a piece
-    Have {
-        piece_id: u32,
-    },
+    Have { piece_id: u32 },
 }
 
 impl X402Message {
@@ -167,7 +150,7 @@ impl X402Message {
 
     /// Verify if a preimage matches a hashlock
     pub fn verify_hashlock(preimage: &Hash, hashlock: &Hash) -> bool {
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
         let computed_hash = Sha256::digest(preimage);
         computed_hash.as_slice() == hashlock.as_slice()
     }
@@ -176,6 +159,7 @@ impl X402Message {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use svix_ksuid::KsuidLike;
 
     #[test]
     fn test_message_types() {
@@ -194,22 +178,22 @@ mod tests {
     #[test]
     fn test_hashlock_verification() {
         let preimage = [1u8; 32];
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
         let hashlock: Hash = Sha256::digest(&preimage).into();
-        
+
         assert!(X402Message::verify_hashlock(&preimage, &hashlock));
-        
+
         let wrong_preimage = [2u8; 32];
         assert!(!X402Message::verify_hashlock(&wrong_preimage, &hashlock));
     }
 
     #[test]
     fn test_proof_verification() {
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
         let data = b"test data";
         let hash: Hash = Sha256::digest(data).into();
         let proof = Proof::new(hash, vec![]);
-        
+
         assert!(proof.verify(data));
         assert!(!proof.verify(b"wrong data"));
     }

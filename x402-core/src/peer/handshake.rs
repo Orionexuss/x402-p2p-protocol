@@ -61,7 +61,7 @@ impl Handshake {
         buf.extend_from_slice(&self.pstr);
         buf.extend_from_slice(&self.reserved);
         buf.extend_from_slice(&self.info_hash);
-        buf.extend_from_slice(&self.peer_id.bytes().as_ref());
+        buf.extend_from_slice(self.peer_id.bytes().as_ref());
         buf
     }
 
@@ -83,7 +83,7 @@ impl Handshake {
         let mut pstr = [0u8; 19];
         pstr.copy_from_slice(&data[1..20]);
 
-        if &pstr != PROTOCOL_STRING {
+        if pstr != PROTOCOL_STRING {
             return Err("Invalid protocol string".to_string());
         }
 
@@ -105,10 +105,6 @@ impl Handshake {
             info_hash,
             peer_id,
         })
-    }
-
-    pub fn peer_id_hex(&self) -> String {
-        hex::encode(self.peer_id.bytes())
     }
 
     /// Send handshake over a TCP stream
