@@ -57,10 +57,13 @@ async fn main() {
         .layer(TraceLayer::new_for_http())
         .with_state(tracker);
 
-    // Start server
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:6969").await.unwrap();
+    // Get listen address from environment or use default
+    let listen_addr = std::env::var("TRACKER_LISTEN").unwrap_or_else(|_| "0.0.0.0:6969".to_string());
 
-    tracing::info!("x402 tracker listening on 0.0.0.0:6969");
+    // Start server
+    let listener = tokio::net::TcpListener::bind(&listen_addr).await.unwrap();
+
+    tracing::info!("x402 tracker listening on {}", listen_addr);
     tracing::info!("Endpoints:");
     tracing::info!("  POST /announce  - Register/update peer");
     tracing::info!("  GET  /discover  - Query peers without registering");

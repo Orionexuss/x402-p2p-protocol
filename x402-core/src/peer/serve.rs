@@ -1,6 +1,7 @@
 use std::io;
 use std::net::{TcpListener, TcpStream};
 
+use crate::peer::tracker_client::{AnnounceResponse, TrackerClient, TrackerClientError};
 use svix_ksuid::{KsuidLike, KsuidMs};
 
 use crate::peer::handshake::{generate_peer_id, Handshake};
@@ -13,7 +14,7 @@ pub struct Seeder {
     /// Our peer ID
     peer_id: KsuidMs,
     /// Info hashes we're serving
-    info_hashes: Vec<[u8; 20]>,
+    pub info_hashes: Vec<[u8; 20]>,
 }
 
 impl Seeder {
@@ -29,6 +30,23 @@ impl Seeder {
     /// Add an info hash that this seeder can serve
     pub fn add_torrent(&mut self, info_hash: [u8; 20]) {
         self.info_hashes.push(info_hash);
+    }
+
+    pub async fn announce_to_tracker(
+        &self,
+        tracker_url: String,
+        info_hash: [u8; 20],
+    ) -> Result<AnnounceResponse, TrackerClientError> {
+        let tracker_client = TrackerClient::new(tracker_url);
+        let peer_id = self.peer_id.bytes();
+        let port = self.port;
+        let pubkey = [0u8; 32]; // TODO: Use real wallet pubkey
+        let left = 0u64; // Seeder has all pieces
+        let event = Some("completed");
+
+        tracker_client
+            .announce(&info_hash, peer_id, port, &pubkey, left, event)
+            .await
     }
 
     /// Add an info hash from hex string

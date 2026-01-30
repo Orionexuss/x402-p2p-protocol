@@ -29,8 +29,8 @@ impl X402Tracker {
         ip: IpAddr,
     ) -> Result<AnnounceResponse, TrackerError> {
         // Parse info hash
-        let info_hash = hex::decode(&req.info_hash)
-            .map_err(|e| TrackerError::HexDecode(e.to_string()))?;
+        let info_hash =
+            hex::decode(&req.info_hash).map_err(|e| TrackerError::HexDecode(e.to_string()))?;
         if info_hash.len() != 20 {
             return Err(TrackerError::InvalidInfoHash(
                 "Info hash must be 20 bytes".to_string(),
@@ -39,8 +39,8 @@ impl X402Tracker {
         let info_hash: InfoHash = info_hash.try_into().unwrap();
 
         // Parse peer ID
-        let peer_id = hex::decode(&req.peer_id)
-            .map_err(|e| TrackerError::HexDecode(e.to_string()))?;
+        let peer_id =
+            hex::decode(&req.peer_id).map_err(|e| TrackerError::HexDecode(e.to_string()))?;
         if peer_id.len() != 20 {
             return Err(TrackerError::InvalidPeerId(
                 "Peer ID must be 20 bytes".to_string(),
@@ -49,8 +49,8 @@ impl X402Tracker {
         let peer_id: PeerId = peer_id.try_into().unwrap();
 
         // Parse pubkey
-        let pubkey = hex::decode(&req.pubkey)
-            .map_err(|e| TrackerError::HexDecode(e.to_string()))?;
+        let pubkey =
+            hex::decode(&req.pubkey).map_err(|e| TrackerError::HexDecode(e.to_string()))?;
         if pubkey.len() != 32 {
             return Err(TrackerError::InvalidPubkey(
                 "Public key must be 32 bytes".to_string(),
@@ -152,8 +152,8 @@ impl X402Tracker {
         &self,
         info_hash_hex: &str,
     ) -> Result<AnnounceResponse, TrackerError> {
-        let info_hash = hex::decode(info_hash_hex)
-            .map_err(|e| TrackerError::HexDecode(e.to_string()))?;
+        let info_hash =
+            hex::decode(info_hash_hex).map_err(|e| TrackerError::HexDecode(e.to_string()))?;
         if info_hash.len() != 20 {
             return Err(TrackerError::InvalidInfoHash(
                 "Info hash must be 20 bytes".to_string(),
@@ -162,9 +162,9 @@ impl X402Tracker {
         let info_hash: InfoHash = info_hash.try_into().unwrap();
 
         let swarms = self.swarms.read().await;
-        let swarm = swarms.get(&info_hash).ok_or_else(|| {
-            TrackerError::InvalidInfoHash("Swarm not found".to_string())
-        })?;
+        let swarm = swarms
+            .get(&info_hash)
+            .ok_or_else(|| TrackerError::InvalidInfoHash("Swarm not found".to_string()))?;
 
         let seeders = self.format_peers(&swarm.seeders);
         let leechers = self.format_peers(&swarm.leechers);
@@ -181,8 +181,8 @@ impl X402Tracker {
     }
 
     pub async fn handle_report(&self, req: ReportRequest) -> Result<(), TrackerError> {
-        let reported = hex::decode(&req.reported)
-            .map_err(|e| TrackerError::HexDecode(e.to_string()))?;
+        let reported =
+            hex::decode(&req.reported).map_err(|e| TrackerError::HexDecode(e.to_string()))?;
         if reported.len() != 20 {
             return Err(TrackerError::InvalidPeerId(
                 "Peer ID must be 20 bytes".to_string(),
@@ -201,7 +201,11 @@ impl X402Tracker {
         let current = reputation.entry(reported).or_insert(0);
         *current -= 10; // Penalty
 
-        info!("Peer {} reputation now: {}", hex::encode(&reported), *current);
+        info!(
+            "Peer {} reputation now: {}",
+            hex::encode(&reported),
+            *current
+        );
 
         Ok(())
     }

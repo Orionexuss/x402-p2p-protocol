@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use serde::{Deserialize, Serialize};
 use std::fs;
 use x402_core::torrent::parser::calculate_info_hash;
 
@@ -8,6 +9,11 @@ use x402_core::torrent::parser::calculate_info_hash;
 struct Cli {
     #[command(subcommand)]
     command: Commands,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SeederConfig {
+    info_hashes: Vec<String>,
 }
 
 #[derive(Subcommand)]
@@ -21,6 +27,12 @@ enum Commands {
 
         #[arg(long)]
         listen: Option<String>,
+
+        #[arg(long, short = 'c', default_value = "seeder.json")]
+        config: String,
+
+        #[arg(long, default_value = "http://localhost:6969")]
+        tracker: String,
     },
     Download {
         source: String, // magnet link or .torrent file
@@ -31,10 +43,14 @@ enum Commands {
         #[arg(long, short = 'o')]
         output: Option<String>,
     },
+    Tracker {
+        #[arg(long, default_value = "0.0.0.0:6969")]
+        listen: String,
+    },
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     match cli.command {
@@ -80,7 +96,12 @@ async fn main() {
                 }
             }
         }
-        Commands::Serve { price, listen } => {
+        Commands::Serve {
+            price,
+            listen,
+            config,
+            tracker,
+        } => {
             let address = listen.unwrap_or_else(|| "0.0.0.0:6881".to_string());
             let parts: Vec<&str> = address.split(':').collect();
 
@@ -98,12 +119,60 @@ async fn main() {
                 addr, port, price
             );
 
-            let seeder = x402_core::Seeder::new(addr, port);
+            let mut seeder = x402_core::Seeder::new(addr, port);
 
-            // TODO: Load torrents from config/database
-            // For now, you need to add torrents manually
-            println!("Note: Add torrents to seed using seeder.add_torrent_hex()");
+            // Load config file
+            println!("Loading config from: {}", config);
+            match fs::read_to_string(&config) {
+                Ok(content) => match serde_json::from_str::<SeederConfig>(&content) {
+                    Ok(cfg) => {
+                        println!("Found {} info hashes in config", cfg.info_hashes.len());
+                        for info_hash_hex in &cfg.info_hashes {
+                            match seeder.add_torrent_hex(info_hash_hex) {
+                                Ok(_) => println!("  Added: {}", info_hash_hex),
+                                Err(e) => eprintln!("  Error adding {}: {}", info_hash_hex, e),
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Error parsing config: {}", e);
+                        std::process::exit(1);
+                    }
+                },
+                Err(e) => {
+                    eprintln!("Error reading config file: {}", e);
+                    eprintln!("Create a config file '{}' with format:", config);
+                    eprintln!("{{\"info_hashes\": [\"<40-char-hex>\"]}}");
+                    std::process::exit(1);
+                }
+            }
 
+            // Announce all torrents to tracker
+            if !seeder.info_hashes.is_empty() {
+                println!("\nAnnouncing to tracker: {}", tracker);
+                for info_hash in &seeder.info_hashes {
+                    match seeder
+                        .announce_to_tracker(tracker.clone(), *info_hash)
+                        .await
+                    {
+                        Ok(response) => {
+                            println!(
+                                "  Announced {} - {} seeders, {} leechers",
+                                hex::encode(info_hash),
+                                response.seeders.len(),
+                                response.leechers.len()
+                            );
+                        }
+                        Err(e) => {
+                            eprintln!("  Failed to announce {}: {}", hex::encode(info_hash), e);
+                        }
+                    }
+                }
+            } else {
+                println!("\nNo torrents to announce (config is empty)");
+            }
+
+            println!("\nStarting listener...");
             if let Err(e) = seeder.listen() {
                 eprintln!("Error starting seeder: {}", e);
                 std::process::exit(1);
@@ -197,5 +266,30 @@ async fn main() {
                 std::process::exit(1);
             }
         }
+        Commands::Tracker { listen } => {
+            println!("Starting x402 tracker server on {}", listen);
+            
+            // The tracker binary needs to be run separately
+            // This command will call the tracker executable
+            let status = std::process::Command::new("cargo")
+                .args(&["run", "--bin", "tracker", "--release"])
+                .env("TRACKER_LISTEN", listen)
+                .status();
+            
+            match status {
+                Ok(exit_status) => {
+                    if !exit_status.success() {
+                        eprintln!("Tracker server exited with status: {}", exit_status);
+                        std::process::exit(1);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error starting tracker: {}", e);
+                    eprintln!("Make sure the tracker binary is built: cargo build --bin tracker");
+                    std::process::exit(1);
+                }
+            }
+        }
     }
+    Ok(())
 }
