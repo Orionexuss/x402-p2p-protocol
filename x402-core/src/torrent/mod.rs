@@ -1,3 +1,4 @@
+pub mod builder;
 pub mod infohash;
 pub mod magnet;
 pub mod parser;

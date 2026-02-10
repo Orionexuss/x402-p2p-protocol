@@ -1,8 +1,9 @@
+#![allow(dead_code)]
 use hex::encode;
 use serde_bencode;
 
 use crate::torrent::infohash::derive_infohash;
-use crate::torrent::types::{Info, Torrent};
+use crate::torrent::types::Torrent;
 
 /// Parse a torrent file and return the Torrent struct
 fn parse_torrent(data: &[u8]) -> Result<Torrent, String> {
@@ -35,6 +36,8 @@ pub fn decode_torrent(data: &[u8]) -> Result<Torrent, String> {
 
 #[cfg(test)]
 mod tests {
+    use crate::torrent::types::Info;
+
     use super::*;
 
     // Helper function to create a minimal valid torrent file in bencode format
