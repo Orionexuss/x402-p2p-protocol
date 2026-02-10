@@ -18,6 +18,22 @@ struct SeederConfig {
 
 #[derive(Subcommand)]
 enum Commands {
+    Create {
+        /// Path to the file to create a torrent for
+        file: String,
+
+        /// Tracker announce URL
+        #[arg(long, short = 't', default_value = "http://localhost:6969/announce")]
+        tracker: String,
+
+        /// Output .torrent file path (optional, defaults to <filename>.torrent)
+        #[arg(long, short = 'o')]
+        output: Option<String>,
+
+        /// Generate magnet URI instead of .torrent file
+        #[arg(long, short = 'm')]
+        magnet: bool,
+    },
     Inspect {
         file: String,
     },
@@ -37,9 +53,6 @@ enum Commands {
     Download {
         source: String, // magnet link or .torrent file
 
-        #[arg(long, default_value = "http://localhost:6969")]
-        tracker: String,
-
         #[arg(long, short = 'o')]
         output: Option<String>,
     },
@@ -54,6 +67,65 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Create {
+            file,
+            tracker,
+            output,
+            magnet,
+        } => {
+            println!("Creating torrent from file: {}", file);
+            println!("Tracker: {}", tracker);
+            println!();
+
+            // Build torrent with automatic piece length calculation
+            let builder = x402_core::TorrentBuilder::new(&file, &tracker);
+
+            if magnet {
+                // Generate magnet URI
+                match builder.build_magnet() {
+                    Ok(magnet_link) => {
+                        let magnet_url = magnet_link.to_url();
+                        println!("Magnet URI generated:");
+                        println!("{}", magnet_url);
+                        println!();
+                        println!("Info Hash: {}", magnet_link.info_hash);
+                        if let Some(name) = &magnet_link.display_name {
+                            println!("Name: {}", name);
+                        }
+                        if let Some(length) = magnet_link.exact_length {
+                            println!("Size: {} bytes", length);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Error generating magnet URI: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+            } else {
+                // Create .torrent file
+                let output_path = output.unwrap_or_else(|| {
+                    format!(
+                        "{}.torrent",
+                        file.split('/').next_back().unwrap_or("output")
+                    )
+                });
+
+                match builder.build_to_file(&output_path) {
+                    Ok(_) => {
+                        println!("Torrent file created: {}", output_path);
+
+                        // Also calculate and display info hash
+                        if let Ok(info_hash) = builder.build_info_hash() {
+                            println!("Info Hash: {}", hex::encode(info_hash));
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Error creating torrent file: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+            }
+        }
         Commands::Inspect { file } => {
             // Check if it's a magnet link or a .torrent file
             if file.starts_with("magnet:?") {
@@ -178,19 +250,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 std::process::exit(1);
             }
         }
-        Commands::Download {
-            source,
-            tracker,
-            output,
-        } => {
+        Commands::Download { source, output } => {
             println!("x402 Download");
             println!("Source: {}", source);
-            println!("Tracker: {}", tracker);
             println!();
+            let tracker;
 
             // Parse source (magnet or .torrent file)
             let (info_hash, file_name, total_size) = if source.starts_with("magnet:?") {
                 // Parse magnet link
+
                 match x402_core::MagnetLink::parse(&source) {
                     Ok(magnet) => {
                         println!("Parsed magnet link:");
@@ -201,7 +270,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if let Some(length) = magnet.exact_length {
                             println!("  Size: {} bytes", length);
                         }
+                        println!("Trackers: {},", magnet.trackers.len());
                         println!();
+
+                        tracker = magnet.trackers.first().cloned().unwrap_or_default();
 
                         // Decode hex info hash
                         let info_hash_bytes = hex::decode(&magnet.info_hash)
@@ -231,7 +303,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             println!("  Name: {}", torrent.info.name);
                             println!("  Pieces: {}", torrent.info.pieces.len() / 20);
                             println!("  Total Size: {} bytes", torrent.total_length());
+                            println!("  Tracker: {}", torrent.announce);
                             println!();
+
+                            tracker = torrent.announce.clone();
 
                             let torrent_length = torrent.total_length();
                             let info_hash = calculate_info_hash(&torrent);
@@ -268,14 +343,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::Tracker { listen } => {
             println!("Starting x402 tracker server on {}", listen);
-            
+
             // The tracker binary needs to be run separately
             // This command will call the tracker executable
             let status = std::process::Command::new("cargo")
-                .args(&["run", "--bin", "tracker", "--release"])
+                .args(["run", "--bin", "tracker", "--release"])
                 .env("TRACKER_LISTEN", listen)
                 .status();
-            
+
             match status {
                 Ok(exit_status) => {
                     if !exit_status.success() {
