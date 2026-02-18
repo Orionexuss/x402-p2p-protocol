@@ -254,7 +254,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("x402 Download");
             println!("Source: {}", source);
             println!();
-            let tracker;
+            let mut tracker;
 
             // Parse source (magnet or .torrent file)
             let (info_hash, file_name, total_size) = if source.starts_with("magnet:?") {
@@ -327,6 +327,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Determine output path
             let output_path = output.unwrap_or_else(|| file_name.clone());
+
+            // remove /announce from tracker URL if present
+            if tracker.ends_with("/announce") {
+                tracker = tracker.trim_end_matches("/announce").to_string();
+            }
 
             // Create leecher and start download
             let leecher = x402_core::Leecher::new(
