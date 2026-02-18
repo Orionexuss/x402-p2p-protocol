@@ -299,13 +299,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 match fs::read(&source) {
                     Ok(data) => match x402_core::decode_torrent(&data) {
                         Ok(torrent) => {
-                            println!("Parsed torrent file:");
-                            println!("  Name: {}", torrent.info.name);
-                            println!("  Pieces: {}", torrent.info.pieces.len() / 20);
-                            println!("  Total Size: {} bytes", torrent.total_length());
-                            println!("  Tracker: {}", torrent.announce);
-                            println!();
-
                             tracker = torrent.announce.clone();
 
                             let torrent_length = torrent.total_length();

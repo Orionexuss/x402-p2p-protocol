@@ -58,7 +58,8 @@ async fn main() {
         .with_state(tracker);
 
     // Get listen address from environment or use default
-    let listen_addr = std::env::var("TRACKER_LISTEN").unwrap_or_else(|_| "0.0.0.0:6969".to_string());
+    let listen_addr =
+        std::env::var("TRACKER_LISTEN").unwrap_or_else(|_| "0.0.0.0:6969".to_string());
 
     // Start server
     let listener = tokio::net::TcpListener::bind(&listen_addr).await.unwrap();

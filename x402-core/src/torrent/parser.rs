@@ -29,8 +29,6 @@ pub fn decode_torrent(data: &[u8]) -> Result<Torrent, String> {
     if let Some(length) = decoded.info.length {
         println!("  File Length: {} bytes", length);
     }
-    println!("Info Hash: {}", encode(info_hash));
-
     Ok(decoded)
 }
 
