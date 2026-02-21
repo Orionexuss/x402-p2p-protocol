@@ -58,7 +58,7 @@ impl Leecher {
     pub async fn download(&self) -> Result<(), LeecherError> {
         println!(
             "Starting download for info_hash: {}",
-            hex::encode(&self.info_hash)
+            hex::encode(self.info_hash)
         );
         println!("Peer ID: {}", hex::encode(self.peer_id.bytes()));
         println!("Output: {}", self.output_path.display());
@@ -109,7 +109,10 @@ impl Leecher {
         for peer_info in &peers {
             match self.connect_to_peer(peer_info).await {
                 Ok(_) => {
-                    println!("Successfully connected to peer {}:{}", peer_info.ip, peer_info.port);
+                    println!(
+                        "Successfully connected to peer {}:{}",
+                        peer_info.ip, peer_info.port
+                    );
                     // TODO: Request pieces and download data
                     break;
                 }
@@ -142,7 +145,10 @@ impl Leecher {
     }
 
     async fn connect_to_peer(&self, peer_info: &PeerInfo) -> Result<(), LeecherError> {
-        println!("\nConnecting to peer {}:{}...", peer_info.ip, peer_info.port);
+        println!(
+            "\nConnecting to peer {}:{}...",
+            peer_info.ip, peer_info.port
+        );
 
         // Parse peer address
         let addr: SocketAddr = format!("{}:{}", peer_info.ip, peer_info.port)
@@ -157,7 +163,7 @@ impl Leecher {
 
         // Perform BitTorrent handshake
         let handshake = Handshake::exchange(&mut stream, self.info_hash, self.peer_id)
-            .map_err(|e| LeecherError::HandshakeFailed(e))?;
+            .map_err(LeecherError::HandshakeFailed)?;
 
         println!("Handshake successful!");
         println!("  Peer ID: {}", hex::encode(handshake.peer_id.bytes()));

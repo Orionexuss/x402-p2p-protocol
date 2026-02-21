@@ -1,3 +1,4 @@
+pub mod auth_proof;
 pub mod handshake;
 pub mod leech;
 pub mod protocol;

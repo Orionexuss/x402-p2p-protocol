@@ -122,6 +122,7 @@ impl Seeder {
         println!("Handshake successful!");
 
         // TODO: Continue with piece exchange protocol
+        // let auth_proof = AuthProof::receive();
 
         Ok(())
     }

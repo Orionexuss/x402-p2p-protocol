@@ -15,6 +15,8 @@ reqwest = { version = "0.12", features = ["json"] }
 tokio = { version = "1", features = ["full"] }
 thiserror = "1"
 serde_json = "1"
+solana-sdk = "4.0.1"
+rand = "0.10.0"
 
 [dev-dependencies]
 tempfile = "3"
