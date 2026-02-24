@@ -1,4 +1,4 @@
-use std::io::Read;
+use std::io::{Read, Write};
 use std::net::TcpStream;
 
 use solana_sdk::{
@@ -33,21 +33,14 @@ impl AuthProof {
         nonce
     }
 
-    pub fn deserialize(data: &[u8]) -> Option<Self> {
-        if data.len() < 128 {
-            return None;
-        }
-
-        let pubkey = Pubkey::try_from(&data[0..32]).unwrap();
-        let signature = Signature::try_from(&data[32..96]).ok()?;
-        let mut nonce = [0u8; 32];
-        nonce.copy_from_slice(&data[96..128]);
-
-        Some(AuthProof {
-            pubkey,
-            signature,
-            nonce,
-        })
+    pub fn send(&self, stream: &mut TcpStream) -> std::io::Result<()> {
+        let mut buf = Vec::with_capacity(96);
+        buf.extend_from_slice(&self.pubkey.to_bytes());
+        buf.extend_from_slice(self.signature.as_ref());
+        stream.write_all(&buf)?;
+        stream.write_all(&self.nonce)?;
+        stream.flush()?;
+        Ok(())
     }
 
     pub fn receive(stream: &mut TcpStream) -> std::io::Result<Self> {
@@ -68,6 +61,13 @@ impl AuthProof {
             signature,
             nonce: nonce_buf,
         })
+    }
+
+    pub fn send_auth_ok(&self, stream: &mut TcpStream) -> std::io::Result<()> {
+        let response = b"AUTH_OK";
+        stream.write_all(response)?;
+        stream.flush()?;
+        Ok(())
     }
 }
 

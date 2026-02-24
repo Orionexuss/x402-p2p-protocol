@@ -1,6 +1,10 @@
+use crate::peer::auth_proof::AuthProof;
 use crate::peer::handshake::{generate_peer_id, Handshake};
 use crate::peer::tracker_client::{PeerInfo, TrackerClient};
-use std::io;
+use dirs::home_dir;
+use solana_sdk::signature::Keypair;
+use solana_sdk::signer::EncodableKey;
+use std::io::{self, Read};
 use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -23,6 +27,9 @@ pub enum LeecherError {
 
     #[error("IO error: {0}")]
     IoError(#[from] io::Error),
+
+    #[error("Authentication failed")]
+    AuthError(),
 }
 
 pub struct Leecher {
@@ -169,12 +176,32 @@ impl Leecher {
         println!("  Peer ID: {}", hex::encode(handshake.peer_id.bytes()));
         println!("  Info Hash: {}", handshake.info_hash_hex());
 
-        // TODO: Perform X402 handshake
-        // TODO: Request price for pieces
-        // TODO: Lock payment
-        // TODO: Request and download pieces
-        // TODO: Verify pieces
-        // TODO: Reveal payment
+        // path ~/.config/solana/id.json
+        let keypair_path = home_dir()
+            .ok_or_else(|| {
+                LeecherError::IoError(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "Home directory not found",
+                ))
+            })?
+            .join(".config")
+            .join("solana")
+            .join("id.json");
+
+        let keypair = Keypair::read_from_file(&keypair_path).unwrap();
+
+        let auth_proof = AuthProof::create(&keypair, AuthProof::generate_nonce());
+        auth_proof.send(&mut stream)?;
+        println!("Sent authentication proof to peer.");
+
+        let mut auth_response = [0u8; 7];
+        stream.read_exact(&mut auth_response)?;
+
+        if &auth_response == b"AUTH_OK" {
+            println!("Peer authenticated successfully!");
+        } else {
+            return Err(LeecherError::AuthError());
+        }
 
         Ok(())
     }

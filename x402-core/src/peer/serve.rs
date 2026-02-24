@@ -1,6 +1,7 @@
 use std::io;
 use std::net::{TcpListener, TcpStream};
 
+use crate::peer::auth_proof::AuthProof;
 use crate::peer::tracker_client::{AnnounceResponse, TrackerClient, TrackerClientError};
 use svix_ksuid::{KsuidLike, KsuidMs};
 
@@ -121,8 +122,14 @@ impl Seeder {
 
         println!("Handshake successful!");
 
-        // TODO: Continue with piece exchange protocol
-        // let auth_proof = AuthProof::receive();
+        let auth_proof = AuthProof::receive(&mut stream).unwrap();
+
+        if auth_proof.verify() {
+            println!("Peer authenticated successfully!");
+            auth_proof.send_auth_ok(&mut stream).unwrap()
+        } else {
+            return Err("Peer authentication failed".to_string());
+        }
 
         Ok(())
     }
