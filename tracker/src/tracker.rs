@@ -113,14 +113,15 @@ impl X402Tracker {
         };
 
         // Add to appropriate list
+        let peer_key = (ip, req.port);
         if req.left == 0 {
             debug!("Adding peer as seeder");
-            swarm.leechers.remove(&peer_id);
-            swarm.seeders.insert(peer_id, peer);
+            swarm.leechers.remove(&peer_key);
+            swarm.seeders.insert(peer_key, peer);
         } else {
             debug!("Adding peer as leecher");
-            swarm.seeders.remove(&peer_id);
-            swarm.leechers.insert(peer_id, peer);
+            swarm.seeders.remove(&peer_key);
+            swarm.leechers.insert(peer_key, peer);
         }
 
         // Get peer lists
@@ -255,8 +256,9 @@ impl X402Tracker {
     async fn remove_peer(&self, info_hash: &InfoHash, peer_id: &PeerId) {
         let mut swarms = self.swarms.write().await;
         if let Some(swarm) = swarms.get_mut(info_hash) {
-            swarm.seeders.remove(peer_id);
-            swarm.leechers.remove(peer_id);
+            // Find and remove peer by peer_id (since we receive peer_id in the request)
+            swarm.seeders.retain(|_, peer| &peer.peer_id != peer_id);
+            swarm.leechers.retain(|_, peer| &peer.peer_id != peer_id);
 
             if swarm.total_peers() == 0 {
                 swarms.remove(info_hash);
@@ -269,7 +271,7 @@ impl X402Tracker {
         *reputation.get(peer_id).unwrap_or(&0)
     }
 
-    fn format_peers(&self, peers: &HashMap<PeerId, PeerEntry>) -> Vec<PeerInfo> {
+    fn format_peers(&self, peers: &HashMap<(IpAddr, u16), PeerEntry>) -> Vec<PeerInfo> {
         peers
             .values()
             .filter(|p| p.reputation >= self.policy.min_reputation)

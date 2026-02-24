@@ -29,8 +29,8 @@ pub struct PeerEntry {
 #[derive(Debug, Clone)]
 pub struct Swarm {
     pub info_hash: InfoHash,
-    pub seeders: HashMap<PeerId, PeerEntry>,
-    pub leechers: HashMap<PeerId, PeerEntry>,
+    pub seeders: HashMap<(IpAddr, u16), PeerEntry>,
+    pub leechers: HashMap<(IpAddr, u16), PeerEntry>,
     pub min_stake: u64,
     pub piece_price: u64,
     pub created_at: SystemTime,
