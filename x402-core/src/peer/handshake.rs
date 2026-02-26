@@ -54,6 +54,14 @@ impl Handshake {
         Ok(Self::new(info_hash, peer_id))
     }
 
+    pub fn enable_extensions(&mut self) {
+        self.reserved[5] |= 0x10;
+    }
+
+    pub fn supports_extensions(&self) -> bool {
+        (self.reserved[5] & 0x10) != 0
+    }
+
     /// Serialize the handshake to bytes
     pub fn serialize(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(HANDSHAKE_LENGTH);
@@ -98,13 +106,17 @@ impl Handshake {
 
         let peer_id = KsuidMs::from_bytes(peer_id_bytes);
 
-        Ok(Handshake {
+        let mut handshake = Handshake {
             pstrlen,
             pstr,
             reserved,
             info_hash,
             peer_id,
-        })
+        };
+
+        handshake.enable_extensions();
+
+        Ok(handshake)
     }
 
     /// Send handshake over a TCP stream
@@ -130,7 +142,8 @@ impl Handshake {
         info_hash: [u8; 20],
         peer_id: KsuidMs,
     ) -> Result<Self, String> {
-        let handshake = Self::new(info_hash, peer_id);
+        let mut handshake = Self::new(info_hash, peer_id);
+        handshake.enable_extensions();
         handshake
             .send(stream)
             .map_err(|e| format!("Failed to send handshake: {}", e))?;
@@ -140,6 +153,12 @@ impl Handshake {
         // Verify the info hash matches
         if response.info_hash != info_hash {
             return Err("Info hash mismatch in handshake response".to_string());
+        }
+
+        if response.supports_extensions() {
+            println!("Peer supports BEP 10");
+        } else {
+            println!("Peer does NOT support BEP 10");
         }
 
         Ok(response)
