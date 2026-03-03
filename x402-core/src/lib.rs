@@ -4,7 +4,7 @@ pub mod torrent;
 // Re-export only public API
 pub use peer::handshake::{generate_peer_id, Handshake};
 pub use peer::leech::Leecher;
-pub use peer::protocol::{message_loop, read_message, write_message, X402Message, X402MessageId};
+pub use peer::protocol::{read_message, write_message, X402Message, X402MessageId};
 pub use peer::serve::Seeder;
 pub use peer::tracker_client::TrackerClient;
 pub use torrent::builder::TorrentBuilder;

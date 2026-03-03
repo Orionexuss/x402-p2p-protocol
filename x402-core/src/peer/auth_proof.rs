@@ -42,12 +42,12 @@ impl AuthProof {
         payload.extend_from_slice(&self.nonce);
 
         let message = X402Message::new(X402MessageId::AuthProof, payload);
-        write_message(stream, &message)
+        write_message(stream, &message, None)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
     }
 
     pub fn receive(stream: &mut TcpStream) -> std::io::Result<Self> {
-        let message = read_message(stream)
+        let message = read_message(stream, false)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
 
         if message.id != X402MessageId::AuthProof {
@@ -82,7 +82,7 @@ impl AuthProof {
     pub fn send_auth_ok(&self, stream: &mut TcpStream) -> std::io::Result<()> {
         // Send an empty PaymentAck message as authentication acknowledgment
         let message = X402Message::new(X402MessageId::AuthOk, vec![]);
-        write_message(stream, &message)
+        write_message(stream, &message, None)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
     }
 }

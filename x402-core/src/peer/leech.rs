@@ -196,7 +196,7 @@ impl Leecher {
         auth_proof.send(&mut stream)?;
         println!("Sent authentication proof to peer.");
 
-        let auth_response = read_message(&mut stream).unwrap().id;
+        let auth_response = read_message(&mut stream, false).unwrap().id;
 
         if auth_response == X402MessageId::AuthOk {
             println!("Peer authenticated successfully!");

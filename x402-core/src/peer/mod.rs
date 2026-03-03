@@ -1,4 +1,5 @@
 pub mod auth_proof;
+pub mod extension_protocol;
 pub mod handshake;
 pub mod inquire_price;
 pub mod leech;

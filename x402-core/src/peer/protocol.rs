@@ -16,6 +16,7 @@ pub enum X402MessageId {
     PaymentReveal = 7,
     PaymentAck = 8,
     Have = 9,
+    Extended = 20,
 }
 
 impl X402MessageId {
@@ -32,6 +33,7 @@ impl X402MessageId {
             7 => Ok(X402MessageId::PaymentReveal),
             8 => Ok(X402MessageId::PaymentAck),
             9 => Ok(X402MessageId::Have),
+            20 => Ok(X402MessageId::Extended),
             _ => Err(ProtocolError::InvalidMessageId(value)),
         }
     }
@@ -46,13 +48,18 @@ impl X402MessageId {
 #[derive(Debug, Clone)]
 pub struct X402Message {
     pub id: X402MessageId,
+    pub extended_message_id: Option<u8>, // Only used if id == Extended
     pub payload: Vec<u8>,
 }
 
 impl X402Message {
     /// Create a new message
     pub fn new(id: X402MessageId, payload: Vec<u8>) -> Self {
-        Self { id, payload }
+        Self {
+            id,
+            extended_message_id: None,
+            payload,
+        }
     }
 
     /// Get the total message length (ID byte + payload)
@@ -84,7 +91,10 @@ const MAX_MESSAGE_SIZE: u32 = 16 * 1024 * 1024; // 16 MB
 /// - 4 bytes: big-endian length (includes message ID + payload)
 /// - 1 byte: message ID
 /// - N bytes: payload
-pub fn read_message(stream: &mut TcpStream) -> Result<X402Message, ProtocolError> {
+pub fn read_message(
+    stream: &mut TcpStream,
+    extended_message: bool,
+) -> Result<X402Message, ProtocolError> {
     // Read 4-byte length prefix
     let mut length_buf = [0u8; 4];
     stream.read_exact(&mut length_buf)?;
@@ -103,12 +113,25 @@ pub fn read_message(stream: &mut TcpStream) -> Result<X402Message, ProtocolError
     stream.read_exact(&mut id_buf)?;
     let id = X402MessageId::from_u8(id_buf[0])?;
 
+    let mut extended_message_id = None;
+
+    if extended_message && id == X402MessageId::Extended {
+        // Read extended message ID (1 byte)
+        let mut ext_id_buf = [0u8; 1];
+        stream.read_exact(&mut ext_id_buf)?;
+        extended_message_id = Some(ext_id_buf[0]);
+    }
+
     // Read payload (remaining bytes)
     let payload_length = (length - 1) as usize; // Subtract 1 for the message ID byte
     let mut payload = vec![0u8; payload_length];
     stream.read_exact(&mut payload)?;
 
-    Ok(X402Message { id, payload })
+    Ok(X402Message {
+        id,
+        extended_message_id,
+        payload,
+    })
 }
 
 /// Write a message to a TCP stream
@@ -117,7 +140,11 @@ pub fn read_message(stream: &mut TcpStream) -> Result<X402Message, ProtocolError
 /// - 4 bytes: big-endian length (includes message ID + payload)
 /// - 1 byte: message ID
 /// - N bytes: payload
-pub fn write_message(stream: &mut TcpStream, message: &X402Message) -> Result<(), ProtocolError> {
+pub fn write_message(
+    stream: &mut TcpStream,
+    message: &X402Message,
+    extended_message: Option<u8>,
+) -> Result<(), ProtocolError> {
     let length = message.message_length();
 
     // Validate message size
@@ -131,86 +158,16 @@ pub fn write_message(stream: &mut TcpStream, message: &X402Message) -> Result<()
     // Write 1-byte message ID
     stream.write_all(&[message.id.to_u8()])?;
 
+    // If this is an extended message, write the extended message ID byte
+    if let Some(val) = extended_message {
+        stream.write_all(&[val])?;
+    };
+
     // Write payload
     stream.write_all(&message.payload)?;
 
     // Ensure data is sent
     stream.flush()?;
-
-    Ok(())
-}
-
-/// Example blocking message loop that processes incoming messages
-///
-/// This is a simple demonstration of how to use the message framing protocol.
-/// In production, you would handle each message ID with specific business logic.
-pub fn message_loop(mut stream: TcpStream) -> Result<(), ProtocolError> {
-    println!("Starting message loop...");
-
-    loop {
-        // Read the next message
-        let message = match read_message(&mut stream) {
-            Ok(msg) => msg,
-            Err(ProtocolError::ConnectionClosed) => {
-                println!("Connection closed by peer");
-                break;
-            }
-            Err(e) => {
-                eprintln!("Error reading message: {}", e);
-                return Err(e);
-            }
-        };
-
-        // Log the received message
-        println!(
-            "Received message: {:?} ({} bytes)",
-            message.id,
-            message.payload.len()
-        );
-
-        // Handle different message types
-        match message.id {
-            X402MessageId::AuthProof => {
-                println!("  -> AuthProof received");
-                // TODO: Verify authentication proof
-            }
-            X402MessageId::AuthOk => {
-                // TODO: Process authentication success
-            }
-            X402MessageId::InquirePrice => {
-                println!("  -> InquirePrice received");
-                // TODO: Process price inquiry and send PriceOffer
-            }
-            X402MessageId::PriceOffer => {
-                println!("  -> PriceOffer received");
-                // TODO: Evaluate price offer
-            }
-            X402MessageId::LockedPayment => {
-                println!("  -> LockedPayment received");
-                // TODO: Verify locked payment
-            }
-            X402MessageId::RequestBlock => {
-                println!("  -> RequestBlock received");
-                // TODO: Process block request
-            }
-            X402MessageId::PieceChunk => {
-                println!("  -> PieceChunk received");
-                // TODO: Validate and store piece chunk
-            }
-            X402MessageId::PaymentReveal => {
-                println!("  -> PaymentReveal received");
-                // TODO: Process payment reveal
-            }
-            X402MessageId::PaymentAck => {
-                println!("  -> PaymentAck received");
-                // TODO: Process payment acknowledgment
-            }
-            X402MessageId::Have => {
-                println!("  -> Have received");
-                // TODO: Update peer's piece availability
-            }
-        }
-    }
 
     Ok(())
 }
