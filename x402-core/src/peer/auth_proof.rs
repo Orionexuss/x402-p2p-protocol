@@ -7,6 +7,8 @@ use solana_sdk::{
     signer::Signer,
 };
 
+use crate::peer::protocol::{read_message, write_message, X402Message, X402MessageId};
+
 pub struct AuthProof {
     pub signature: Signature,
     pub pubkey: Pubkey,
@@ -34,40 +36,54 @@ impl AuthProof {
     }
 
     pub fn send(&self, stream: &mut TcpStream) -> std::io::Result<()> {
-        let mut buf = Vec::with_capacity(96);
-        buf.extend_from_slice(&self.pubkey.to_bytes());
-        buf.extend_from_slice(self.signature.as_ref());
-        stream.write_all(&buf)?;
-        stream.write_all(&self.nonce)?;
-        stream.flush()?;
-        Ok(())
+        let mut payload = Vec::with_capacity(128);
+        payload.extend_from_slice(&self.pubkey.to_bytes());
+        payload.extend_from_slice(self.signature.as_ref());
+        payload.extend_from_slice(&self.nonce);
+
+        let message = X402Message::new(X402MessageId::AuthProof, payload);
+        write_message(stream, &message)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
     }
 
     pub fn receive(stream: &mut TcpStream) -> std::io::Result<Self> {
-        let mut buf = [0u8; 96]; // 32 bytes pubkey + 64 bytes signature
-        stream.read_exact(&mut buf)?;
+        let message = read_message(stream)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
 
-        let pubkey = Pubkey::try_from(&buf[0..32]).unwrap();
-        let signature = Signature::try_from(&buf[32..96]).map_err(|_| {
+        if message.id != X402MessageId::AuthProof {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Expected AuthProof message",
+            ));
+        }
+
+        if message.payload.len() < 128 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "AuthProof payload too short",
+            ));
+        }
+
+        let pubkey = Pubkey::try_from(&message.payload[0..32]).unwrap();
+        let signature = Signature::try_from(&message.payload[32..96]).map_err(|_| {
             std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid signature")
         })?;
 
-        // For simplicity, we assume the nonce is sent separately after the proof
-        let mut nonce_buf = [0u8; 32];
-        stream.read_exact(&mut nonce_buf)?;
+        let mut nonce = [0u8; 32];
+        nonce.copy_from_slice(&message.payload[96..128]);
 
         Ok(AuthProof {
             pubkey,
             signature,
-            nonce: nonce_buf,
+            nonce,
         })
     }
 
     pub fn send_auth_ok(&self, stream: &mut TcpStream) -> std::io::Result<()> {
-        let response = b"AUTH_OK";
-        stream.write_all(response)?;
-        stream.flush()?;
-        Ok(())
+        // Send an empty PaymentAck message as authentication acknowledgment
+        let message = X402Message::new(X402MessageId::AuthOk, vec![]);
+        write_message(stream, &message)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
     }
 }
 

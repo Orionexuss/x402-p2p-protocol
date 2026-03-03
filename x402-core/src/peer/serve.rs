@@ -79,6 +79,7 @@ impl Seeder {
         for stream in listener.incoming() {
             match stream {
                 Ok(stream) => {
+                    println!();
                     println!("New connection from: {}", stream.peer_addr()?);
                     if let Err(e) = self.handle_connection(stream) {
                         eprintln!("Error handling connection: {}", e);

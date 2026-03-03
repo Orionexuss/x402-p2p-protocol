@@ -27,13 +27,15 @@ impl Handshake {
         let mut pstr = [0u8; 19];
         pstr.copy_from_slice(PROTOCOL_STRING);
 
-        Handshake {
+        let mut handshake = Handshake {
             pstrlen: 19,
             pstr,
             reserved: [0u8; 8],
             info_hash,
             peer_id,
-        }
+        };
+        handshake.enable_extensions();
+        handshake
     }
 
     /// Create a handshake from an info hash hex string
@@ -106,15 +108,13 @@ impl Handshake {
 
         let peer_id = KsuidMs::from_bytes(peer_id_bytes);
 
-        let mut handshake = Handshake {
+        let handshake = Handshake {
             pstrlen,
             pstr,
             reserved,
             info_hash,
             peer_id,
         };
-
-        handshake.enable_extensions();
 
         Ok(handshake)
     }
@@ -159,6 +159,7 @@ impl Handshake {
             println!("Peer supports BEP 10");
         } else {
             println!("Peer does NOT support BEP 10");
+            return Err("Peer does not support required extensions".to_string());
         }
 
         Ok(response)

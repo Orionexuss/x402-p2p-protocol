@@ -1,9 +1,11 @@
 use crate::peer::auth_proof::AuthProof;
 use crate::peer::handshake::{generate_peer_id, Handshake};
+use crate::peer::protocol::X402MessageId;
 use crate::peer::tracker_client::{PeerInfo, TrackerClient};
+use crate::read_message;
 use dirs::home_dir;
 use solana_sdk::signature::Keypair;
-use solana_sdk::signer::EncodableKey;
+use solana_sdk::signer::{EncodableKey, Signer};
 use std::io::{self, Read};
 use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
@@ -194,12 +196,12 @@ impl Leecher {
         auth_proof.send(&mut stream)?;
         println!("Sent authentication proof to peer.");
 
-        let mut auth_response = [0u8; 7];
-        stream.read_exact(&mut auth_response)?;
+        let auth_response = read_message(&mut stream).unwrap().id;
 
-        if &auth_response == b"AUTH_OK" {
+        if auth_response == X402MessageId::AuthOk {
             println!("Peer authenticated successfully!");
         } else {
+            println!("Peer authentication failed!");
             return Err(LeecherError::AuthError());
         }
 
