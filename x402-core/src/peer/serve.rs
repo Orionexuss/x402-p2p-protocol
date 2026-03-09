@@ -2,7 +2,9 @@ use std::io;
 use std::net::{TcpListener, TcpStream};
 
 use crate::peer::auth_proof::AuthProof;
+use crate::peer::protocol::{read_message, X402Message, X402MessageId};
 use crate::peer::tracker_client::{AnnounceResponse, TrackerClient, TrackerClientError};
+use solana_sdk::{pubkey::Pubkey, signature::Signature};
 use svix_ksuid::{KsuidLike, KsuidMs};
 
 use crate::peer::handshake::{generate_peer_id, Handshake};
@@ -123,16 +125,72 @@ impl Seeder {
 
         println!("Handshake successful!");
 
-        let auth_proof = AuthProof::receive(&mut stream).unwrap();
+        // Route incoming protocol messages by ID so order is not assumed.
+        loop {
+            let message = read_message(&mut stream)
+                .map_err(|e| format!("Failed to read protocol message: {}", e))?;
 
-        if auth_proof.verify() {
-            println!("Peer authenticated successfully!");
-            auth_proof.send_auth_ok(&mut stream).unwrap()
-        } else {
-            return Err("Peer authentication failed".to_string());
+            match message.id {
+                // Extension channel (BEP 10 style metadata and custom messages)
+                X402MessageId::Extended => {
+                    println!(
+                        "Received Extended message id {:?} (TODO: route extension payload)",
+                        message.extended_message_id
+                    );
+                }
+                X402MessageId::AuthProof => {
+                    let auth_proof = AuthProof::receive(&message)?;
+
+                    if auth_proof.verify() {
+                        println!("Peer authenticated successfully!");
+                        auth_proof
+                            .send_auth_ok(&mut stream)
+                            .map_err(|e| format!("Failed to send AuthOk: {}", e))?;
+                        // Keep connection alive for the rest of the protocol flow.
+                        return Ok(());
+                    }
+
+                    return Err("Peer authentication failed".to_string());
+                }
+
+                X402MessageId::InquirePrice => {
+                    println!("Received InquirePrice (TODO: build and send PriceOffer)");
+                }
+
+                X402MessageId::PriceOffer => {
+                    println!("Received PriceOffer (unexpected for seeder; TODO: validate/ignore)");
+                }
+
+                X402MessageId::LockedPayment => {
+                    println!("Received LockedPayment (TODO: verify lock/amount)");
+                }
+
+                X402MessageId::RequestBlock => {
+                    println!("Received RequestBlock (TODO: send PieceChunk)");
+                }
+
+                X402MessageId::PieceChunk => {
+                    println!("Received PieceChunk (unexpected for seeder; TODO: validate/ignore)");
+                }
+
+                X402MessageId::PaymentReveal => {
+                    println!("Received PaymentReveal (TODO: verify and send PaymentAck)");
+                }
+
+                X402MessageId::PaymentAck => {
+                    println!("Received PaymentAck (unexpected for seeder; TODO: validate/ignore)");
+                }
+
+                X402MessageId::Have => {
+                    println!("Received Have (TODO: process peer piece availability)");
+                }
+
+                // AuthOk is typically sent by seeder after AuthProof.
+                X402MessageId::AuthOk => {
+                    println!("Received AuthOk (unexpected for seeder; TODO: validate/ignore)");
+                }
+            }
         }
-
-        Ok(())
     }
 }
 
