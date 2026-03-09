@@ -62,6 +62,14 @@ impl X402Message {
         }
     }
 
+    pub fn new_extended(extended_message_id: u8, payload: Vec<u8>) -> Self {
+        Self {
+            id: X402MessageId::Extended,
+            extended_message_id: Some(extended_message_id),
+            payload,
+        }
+    }
+
     /// Get the total message length (ID byte + payload)
     pub fn message_length(&self) -> u32 {
         1 + self.payload.len() as u32
@@ -81,6 +89,9 @@ pub enum ProtocolError {
 
     #[error("Connection closed")]
     ConnectionClosed,
+
+    #[error("Invalid extended message format")]
+    InvalidExtendedMessage,
 }
 
 const MAX_MESSAGE_SIZE: u32 = 16 * 1024 * 1024; // 16 MB
@@ -91,10 +102,7 @@ const MAX_MESSAGE_SIZE: u32 = 16 * 1024 * 1024; // 16 MB
 /// - 4 bytes: big-endian length (includes message ID + payload)
 /// - 1 byte: message ID
 /// - N bytes: payload
-pub fn read_message(
-    stream: &mut TcpStream,
-    extended_message: bool,
-) -> Result<X402Message, ProtocolError> {
+pub fn read_message(stream: &mut TcpStream) -> Result<X402Message, ProtocolError> {
     // Read 4-byte length prefix
     let mut length_buf = [0u8; 4];
     stream.read_exact(&mut length_buf)?;
@@ -115,7 +123,7 @@ pub fn read_message(
 
     let mut extended_message_id = None;
 
-    if extended_message && id == X402MessageId::Extended {
+    if id == X402MessageId::Extended {
         // Read extended message ID (1 byte)
         let mut ext_id_buf = [0u8; 1];
         stream.read_exact(&mut ext_id_buf)?;
@@ -123,7 +131,11 @@ pub fn read_message(
     }
 
     // Read payload (remaining bytes)
-    let payload_length = (length - 1) as usize; // Subtract 1 for the message ID byte
+    let payload_length = if id == X402MessageId::Extended {
+        (length - 2) as usize
+    } else {
+        (length - 1) as usize
+    };
     let mut payload = vec![0u8; payload_length];
     stream.read_exact(&mut payload)?;
 
@@ -140,28 +152,31 @@ pub fn read_message(
 /// - 4 bytes: big-endian length (includes message ID + payload)
 /// - 1 byte: message ID
 /// - N bytes: payload
-pub fn write_message(
-    stream: &mut TcpStream,
-    message: &X402Message,
-    extended_message: Option<u8>,
-) -> Result<(), ProtocolError> {
-    let length = message.message_length();
+pub fn write_message(stream: &mut TcpStream, message: &X402Message) -> Result<(), ProtocolError> {
+    let mut length = 1 + message.payload.len(); // message_id + payload
 
-    // Validate message size
-    if length > MAX_MESSAGE_SIZE {
-        return Err(ProtocolError::MessageTooLarge(length));
+    if message.id == X402MessageId::Extended {
+        length += 1; // extended message id
+    }
+
+    if length > MAX_MESSAGE_SIZE as usize {
+        return Err(ProtocolError::MessageTooLarge(length as u32));
     }
 
     // Write 4-byte length prefix
-    stream.write_all(&length.to_be_bytes())?;
+    stream.write_all(&(length as u32).to_be_bytes())?;
 
     // Write 1-byte message ID
     stream.write_all(&[message.id.to_u8()])?;
 
     // If this is an extended message, write the extended message ID byte
-    if let Some(val) = extended_message {
-        stream.write_all(&[val])?;
-    };
+    if message.id == X402MessageId::Extended {
+        let ext_id = message
+            .extended_message_id
+            .ok_or(ProtocolError::InvalidExtendedMessage)?;
+
+        stream.write_all(&[ext_id])?;
+    }
 
     // Write payload
     stream.write_all(&message.payload)?;
