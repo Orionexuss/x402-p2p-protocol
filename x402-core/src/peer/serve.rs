@@ -2,9 +2,9 @@ use std::io;
 use std::net::{TcpListener, TcpStream};
 
 use crate::peer::auth_proof::AuthProof;
-use crate::peer::protocol::{read_message, X402Message, X402MessageId};
+use crate::peer::extension_protocol::ExtendedHandshake;
+use crate::peer::protocol::{read_message, X402MessageId};
 use crate::peer::tracker_client::{AnnounceResponse, TrackerClient, TrackerClientError};
-use solana_sdk::{pubkey::Pubkey, signature::Signature};
 use svix_ksuid::{KsuidLike, KsuidMs};
 
 use crate::peer::handshake::{generate_peer_id, Handshake};
@@ -124,7 +124,11 @@ impl Seeder {
             .map_err(|e| format!("Failed to send handshake: {}", e))?;
 
         println!("Handshake successful!");
+        // ID that the peer expects us to use when sending ut_metadata
+        let mut peer_ut_metadata: Option<u8> = None;
 
+        // To avoid sending our handshake more than once
+        let mut sent_extended_handshake = false;
         // Route incoming protocol messages by ID so order is not assumed.
         loop {
             let message = read_message(&mut stream)
@@ -133,10 +137,51 @@ impl Seeder {
             match message.id {
                 // Extension channel (BEP 10 style metadata and custom messages)
                 X402MessageId::Extended => {
-                    println!(
-                        "Received Extended message id {:?} (TODO: route extension payload)",
-                        message.extended_message_id
-                    );
+                    match message.extended_message_id {
+                        Some(0) => {
+                            println!("Received extended handshake");
+
+                            let peer_handshake = ExtendedHandshake::receive_extended_handshake(
+                                &message,
+                            )
+                            .map_err(|e| format!("Failed to process extended handshake: {}", e))?;
+
+                            // Save if the peer supports ut_metadata
+                            peer_ut_metadata = peer_handshake.m.get("ut_metadata").copied();
+
+                            if let Some(id) = peer_ut_metadata {
+                                println!("Peer supports ut_metadata with id {}", id);
+                            } else {
+                                println!("Peer does not support ut_metadata");
+                            }
+
+                            // Send our handshake only once
+                            if !sent_extended_handshake {
+                                let my_handshake = ExtendedHandshake::new();
+                                my_handshake.send_extended_handshake(&mut stream);
+                                sent_extended_handshake = true;
+                            }
+                        }
+
+                        // ----- OTHER EXTENDED MESSAGES -----
+                        Some(ext_id) => {
+                            if Some(ext_id) == peer_ut_metadata {
+                                println!("Received ut_metadata message");
+
+                                // TODO: parse ut_metadata message and handle accordingly
+                                // - request
+                                // - data
+                                // - reject
+                            } else {
+                                println!("Received unknown extended message id {}", ext_id);
+                            }
+                        }
+
+                        // ----- MALFORMED MESSAGE -----
+                        None => {
+                            println!("Invalid extended message (missing extended id)");
+                        }
+                    }
                 }
                 X402MessageId::AuthProof => {
                     let auth_proof = AuthProof::receive(&message)?;

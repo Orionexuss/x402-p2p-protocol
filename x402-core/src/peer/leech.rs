@@ -1,4 +1,5 @@
 use crate::peer::auth_proof::AuthProof;
+use crate::peer::extension_protocol::ExtendedHandshake;
 use crate::peer::handshake::{generate_peer_id, Handshake};
 use crate::peer::protocol::X402MessageId;
 use crate::peer::tracker_client::{PeerInfo, TrackerClient};
@@ -23,6 +24,9 @@ pub enum LeecherError {
 
     #[error("Connection failed: {0}")]
     ConnectionFailed(String),
+
+    #[error("Handshake failed: {0}")]
+    ExtendedHandshakeFailed(String),
 
     #[error("Handshake failed: {0}")]
     HandshakeFailed(String),
@@ -64,7 +68,7 @@ impl Leecher {
     }
 
     /// Start the download process
-    pub async fn download(&self) -> Result<(), LeecherError> {
+    pub async fn download(&self, is_magnet: bool) -> Result<(), LeecherError> {
         println!(
             "Starting download for info_hash: {}",
             hex::encode(self.info_hash)
@@ -116,7 +120,7 @@ impl Leecher {
 
         // 3. Try to connect to peers
         for peer_info in &peers {
-            match self.connect_to_peer(peer_info).await {
+            match self.connect_to_peer(peer_info, is_magnet).await {
                 Ok(_) => {
                     println!(
                         "Successfully connected to peer {}:{}",
@@ -153,7 +157,11 @@ impl Leecher {
         Ok(())
     }
 
-    async fn connect_to_peer(&self, peer_info: &PeerInfo) -> Result<(), LeecherError> {
+    async fn connect_to_peer(
+        &self,
+        peer_info: &PeerInfo,
+        is_magnet: bool,
+    ) -> Result<(), LeecherError> {
         println!(
             "\nConnecting to peer {}:{}...",
             peer_info.ip, peer_info.port
@@ -178,6 +186,30 @@ impl Leecher {
         println!("  Peer ID: {}", hex::encode(handshake.peer_id.bytes()));
         println!("  Info Hash: {}", handshake.info_hash_hex());
 
+        // implement BEP 10
+        if is_magnet {
+            ExtendedHandshake::new().send_extended_handshake(&mut stream);
+
+            let mut peer_ut_metadata: Option<u8> = None;
+
+            loop {
+                let message = read_message(&mut stream).unwrap();
+
+                if message.id == X402MessageId::Extended && message.extended_message_id == Some(0) {
+                    let peer_handshake =
+                        ExtendedHandshake::receive_extended_handshake(&message).unwrap();
+
+                    peer_ut_metadata = peer_handshake.m.get("ut_metadata").copied();
+
+                    if let Some(id) = peer_ut_metadata {
+                        println!("Peer supports ut_metadata with id {}", id);
+                    }
+
+                    break;
+                }
+            }
+        }
+
         // path ~/.config/solana/id.json
         let keypair_path = home_dir()
             .ok_or_else(|| {
@@ -196,7 +228,7 @@ impl Leecher {
         auth_proof.send(&mut stream)?;
         println!("Sent authentication proof to peer.");
 
-        let auth_response = read_message(&mut stream, false).unwrap().id;
+        let auth_response = read_message(&mut stream).unwrap().id;
 
         if auth_response == X402MessageId::AuthOk {
             println!("Peer authenticated successfully!");

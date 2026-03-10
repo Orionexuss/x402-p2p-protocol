@@ -255,10 +255,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("Source: {}", source);
             println!();
             let mut tracker;
+            let mut is_magnet: bool;
 
             // Parse source (magnet or .torrent file)
             let (info_hash, file_name, total_size) = if source.starts_with("magnet:?") {
                 // Parse magnet link
+                is_magnet = true;
 
                 match x402_core::MagnetLink::parse(&source) {
                     Ok(magnet) => {
@@ -295,6 +297,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             } else {
+                is_magnet = false;
                 // Parse .torrent file
                 match fs::read(&source) {
                     Ok(data) => match x402_core::decode_torrent(&data) {
@@ -334,7 +337,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 total_size,
             );
 
-            if let Err(e) = leecher.download().await {
+            if let Err(e) = leecher.download(is_magnet).await {
                 eprintln!("Download failed: {}", e);
                 std::process::exit(1);
             }
