@@ -1,13 +1,53 @@
-use std::io;
+use std::collections::HashMap;
 use std::net::{TcpListener, TcpStream};
+use std::{fs, io};
 
+use crate::decode_torrent;
 use crate::peer::auth_proof::AuthProof;
 use crate::peer::extension_protocol::ExtendedHandshake;
-use crate::peer::protocol::{read_message, X402MessageId};
+use crate::peer::protocol::{X402MessageId, read_message};
 use crate::peer::tracker_client::{AnnounceResponse, TrackerClient, TrackerClientError};
+use crate::torrent::parser::calculate_info_hash;
 use svix_ksuid::{KsuidLike, KsuidMs};
 
-use crate::peer::handshake::{generate_peer_id, Handshake};
+use crate::peer::handshake::{Handshake, generate_peer_id};
+
+#[derive(Debug)]
+struct TorrentManager {
+    torrents: HashMap<[u8; 20], TorrentWithMetadata>,
+}
+
+#[derive(Debug)]
+struct TorrentWithMetadata {
+    metadata: Vec<u8>,
+}
+
+impl TorrentManager {
+    pub fn load_torrents() -> Self {
+        let mut torrents = HashMap::new();
+
+        // Read all files in the ./torrents directory
+        if let Ok(entries) = fs::read_dir("./torrents") {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if let Ok(data) = fs::read(&path)
+                    && let Ok(torrent) = decode_torrent(&data)
+                {
+                    let info_hash = calculate_info_hash(&torrent);
+                    let metadata = torrent.get_torrent_metadata();
+                    let torrent_with_metadata = TorrentWithMetadata { metadata };
+                    torrents.insert(info_hash, torrent_with_metadata);
+                }
+            }
+        }
+
+        TorrentManager { torrents }
+    }
+
+    pub fn get_torrent(&self, info_hash: &[u8; 20]) -> Option<&TorrentWithMetadata> {
+        self.torrents.get(info_hash)
+    }
+}
 
 pub struct Seeder {
     /// The address to bind to
@@ -73,6 +113,8 @@ impl Seeder {
 
     /// Start listening for incoming connections
     pub fn listen(&self) -> io::Result<()> {
+        let torrent_manager = TorrentManager::load_torrents();
+
         let addr = format!("{}:{}", self.address, self.port);
         let listener = TcpListener::bind(&addr)?;
         println!("Seeder listening on {}", addr);
@@ -83,7 +125,7 @@ impl Seeder {
                 Ok(stream) => {
                     println!();
                     println!("New connection from: {}", stream.peer_addr()?);
-                    if let Err(e) = self.handle_connection(stream) {
+                    if let Err(e) = self.handle_connection(stream, &torrent_manager) {
                         eprintln!("Error handling connection: {}", e);
                     }
                 }
@@ -97,7 +139,11 @@ impl Seeder {
     }
 
     /// Handle an incoming peer connection
-    fn handle_connection(&self, mut stream: TcpStream) -> Result<(), String> {
+    fn handle_connection(
+        &self,
+        mut stream: TcpStream,
+        torrent_manager: &TorrentManager,
+    ) -> Result<(), String> {
         println!("Waiting for handshake...");
 
         // Receive the handshake from the leecher
@@ -156,9 +202,17 @@ impl Seeder {
                             }
 
                             // Send our handshake only once
-                            if !sent_extended_handshake {
-                                let my_handshake = ExtendedHandshake::new();
+                            if !sent_extended_handshake
+                                && let Some(torrent) =
+                                    torrent_manager.get_torrent(&handshake.info_hash)
+                            {
+                                let mut my_handshake = ExtendedHandshake::new();
+
+                                let metadata = torrent.metadata.clone();
+                                my_handshake.metadata_size = Some(metadata.len() as u64);
+
                                 my_handshake.send_extended_handshake(&mut stream);
+
                                 sent_extended_handshake = true;
                             }
                         }

@@ -1,5 +1,4 @@
 #![allow(dead_code)]
-use hex::encode;
 use serde_bencode;
 
 use crate::torrent::infohash::derive_infohash;
@@ -19,7 +18,6 @@ pub fn calculate_info_hash(torrent: &Torrent) -> [u8; 20] {
 /// Decode and print torrent information
 pub fn decode_torrent(data: &[u8]) -> Result<Torrent, String> {
     let decoded = parse_torrent(data)?;
-    let info_hash = calculate_info_hash(&decoded);
 
     println!("Tracker URL: {}", decoded.announce);
     println!("Info:");

@@ -8,6 +8,9 @@ use crate::{
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ExtendedHandshake {
     pub m: HashMap<String, u8>, // Mapping of extension name to message ID
+
+    #[serde(default)]
+    pub metadata_size: Option<u64>,
 }
 
 impl Default for ExtendedHandshake {
@@ -22,7 +25,10 @@ impl ExtendedHandshake {
 
         extensions.insert("ut_metadata".to_string(), 1);
 
-        Self { m: extensions }
+        Self {
+            m: extensions,
+            metadata_size: None,
+        }
     }
 
     pub fn to_bencode(&self) -> Vec<u8> {

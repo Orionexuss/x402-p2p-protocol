@@ -29,4 +29,8 @@ impl Torrent {
     pub fn num_pieces(&self) -> usize {
         self.info.pieces.len() / 20
     }
+
+    pub fn get_torrent_metadata(&self) -> Vec<u8> {
+        serde_bencode::ser::to_bytes(&self.info).expect("Failed to serialize torrent metadata")
+    }
 }
