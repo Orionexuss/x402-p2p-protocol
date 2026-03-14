@@ -3,6 +3,7 @@ use crate::peer::extension_protocol::ExtendedHandshake;
 use crate::peer::handshake::{generate_peer_id, Handshake};
 use crate::peer::protocol::X402MessageId;
 use crate::peer::tracker_client::{PeerInfo, TrackerClient};
+use crate::peer::ut_metadata::{calculate_num_pieces, MetadataMessage};
 use crate::read_message;
 use dirs::home_dir;
 use solana_sdk::signature::Keypair;
@@ -189,9 +190,12 @@ impl Leecher {
         // implement BEP 10
         if is_magnet {
             ExtendedHandshake::new().send_extended_handshake(&mut stream);
+            const MAX_METADATA_SIZE: u32 = 4 * 1024 * 1024;
 
-            let mut peer_ut_metadata: Option<u8> = None;
+            let mut peer_ut_metadata_id: Option<u8> = None;
+            let metadata_size: u32;
 
+            // Wait for extended handshake response
             loop {
                 let message = read_message(&mut stream).unwrap();
 
@@ -199,15 +203,50 @@ impl Leecher {
                     let peer_handshake =
                         ExtendedHandshake::receive_extended_handshake(&message).unwrap();
 
-                    peer_ut_metadata = peer_handshake.m.get("ut_metadata").copied();
+                    peer_ut_metadata_id = peer_handshake.m.get("ut_metadata").copied();
+                    metadata_size = peer_handshake.metadata_size.unwrap() as u32;
 
-                    if let Some(id) = peer_ut_metadata {
+                    if let Some(id) = peer_ut_metadata_id {
                         println!("Peer supports ut_metadata with id {}", id);
+                    } else {
+                        panic!("Peer does not support ut_metadata");
                     }
 
+                    if metadata_size > MAX_METADATA_SIZE {
+                        panic!("metadata too large");
+                    }
                     break;
                 }
             }
+
+            let ut_metadata_id = peer_ut_metadata_id.unwrap();
+            let calculated_pieces = calculate_num_pieces(metadata_size);
+
+            // Request pieces in a pipelined manner (e.g. 8 pieces at a time)
+            let pipeline = 8.min(calculated_pieces);
+
+            for piece in 0..pipeline {
+                MetadataMessage::send_ut_metadata_request(&mut stream, ut_metadata_id, piece)
+                    .unwrap();
+                println!("Requested metadata piece {}", piece);
+            }
+            /* let mut next_piece = pipeline;
+             loop {
+                let msg = read_message(&mut stream)?;
+
+                if let Some(piece_index) = parse_metadata_piece(&msg) {
+                    save_piece(piece_index);
+
+                    if next_piece < calculated_pieces {
+                        send_request(next_piece);
+                        next_piece += 1;
+                    }
+                }
+
+                if all_pieces_downloaded() {
+                    break;
+                }
+            } */
         }
 
         // path ~/.config/solana/id.json
