@@ -1,4 +1,5 @@
 use std::net::TcpStream;
+use std::collections::VecDeque;
 
 #[derive(Debug, Clone, Copy)]
 enum MetadataMessageType {
@@ -165,5 +166,40 @@ impl MetadataMessage {
 
         let end = (start + METADATA_PIECE_SIZE as usize).min(total_size);
         Some((start, end))
+    }
+
+    pub fn flush_metadata_queue(
+        stream: &mut TcpStream,
+        ext_id: u8,
+        metadata: &[u8],
+        queue: &mut VecDeque<u32>,
+        pop_from_back: &mut bool,
+        max_responses_per_tick: usize,
+    ) -> std::io::Result<()> {
+        let mut sent = 0usize;
+
+        while sent < max_responses_per_tick {
+            let next_piece = if *pop_from_back {
+                queue.pop_back()
+            } else {
+                queue.pop_front()
+            };
+
+            let Some(piece) = next_piece else {
+                break;
+            };
+
+            let Some((start, end)) = Self::metadata_piece_bounds(piece, metadata.len()) else {
+                Self::send_ut_metadata_reject(stream, ext_id, piece)?;
+                continue;
+            };
+
+            Self::send_ut_metadata_data(stream, ext_id, piece, &metadata[start..end])?;
+
+            *pop_from_back = !*pop_from_back;
+            sent += 1;
+        }
+
+        Ok(())
     }
 }

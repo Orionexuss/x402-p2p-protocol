@@ -38,11 +38,6 @@ impl TorrentManager {
                 {
                     let info_hash = calculate_info_hash(&torrent);
                     let metadata = torrent.get_torrent_metadata();
-                    println!(
-                        " loaded torrent: {} with info: {:?}",
-                        path.display(),
-                        serde_bencode::from_bytes::<Info>(&metadata),
-                    );
                     let torrent_with_metadata = TorrentWithMetadata { metadata };
                     torrents.insert(info_hash, torrent_with_metadata);
                 }
@@ -285,13 +280,15 @@ impl Seeder {
                                     );
                                 }
 
-                                self.flush_metadata_queue(
+                                MetadataMessage::flush_metadata_queue(
                                     &mut stream,
                                     response_ext_id,
                                     &metadata,
                                     &mut metadata_request_queue,
                                     &mut pop_from_back,
-                                )?;
+                                    Self::MAX_METADATA_RESPONSES_PER_TICK,
+                                )
+                                .map_err(|e| format!("Failed to flush metadata queue: {}", e))?;
                             } else {
                                 println!("Received unknown extended message id {}", ext_id);
                             }
@@ -358,54 +355,6 @@ impl Seeder {
         }
     }
 
-    fn flush_metadata_queue(
-        &self,
-        stream: &mut TcpStream,
-        ext_id: u8,
-        metadata: &[u8],
-        queue: &mut VecDeque<u32>,
-        pop_from_back: &mut bool,
-    ) -> Result<(), String> {
-        let mut sent = 0usize;
-        while sent < Self::MAX_METADATA_RESPONSES_PER_TICK {
-            let next_piece = if *pop_from_back {
-                queue.pop_back()
-            } else {
-                queue.pop_front()
-            };
-
-            let Some(piece) = next_piece else {
-                break;
-            };
-
-            let Some((start, end)) = MetadataMessage::metadata_piece_bounds(piece, metadata.len())
-            else {
-                MetadataMessage::send_ut_metadata_reject(stream, ext_id, piece)
-                    .map_err(|e| format!("Failed to send ut_metadata reject: {}", e))?;
-                continue;
-            };
-
-            MetadataMessage::send_ut_metadata_data(
-                stream,
-                ext_id,
-                piece,
-                &metadata[start..end],
-            )
-            .map_err(|e| format!("Failed to send ut_metadata data: {}", e))?;
-
-            println!(
-                "Sent metadata piece {} ({} bytes, queue remaining: {})",
-                piece,
-                end - start,
-                queue.len()
-            );
-
-            *pop_from_back = !*pop_from_back;
-            sent += 1;
-        }
-
-        Ok(())
-    }
 }
 
 #[cfg(test)]
