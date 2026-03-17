@@ -4,11 +4,6 @@ use serde_bencode;
 use crate::torrent::infohash::derive_infohash;
 use crate::torrent::types::Torrent;
 
-/// Parse a torrent file and return the Torrent struct
-fn parse_torrent(data: &[u8]) -> Result<Torrent, String> {
-    serde_bencode::from_bytes(data).map_err(|e| format!("Failed to decode torrent: {}", e))
-}
-
 /// Calculate the info hash for a torrent and return as [u8; 20]
 pub fn calculate_info_hash(torrent: &Torrent) -> [u8; 20] {
     let info_bytes = serde_bencode::to_bytes(&torrent.info).expect("Failed to encode info dict");
@@ -17,16 +12,8 @@ pub fn calculate_info_hash(torrent: &Torrent) -> [u8; 20] {
 
 /// Decode and print torrent information
 pub fn decode_torrent(data: &[u8]) -> Result<Torrent, String> {
-    let decoded = parse_torrent(data)?;
-
-    println!("Tracker URL: {}", decoded.announce);
-    println!("Info:");
-    println!("  Name: {}", decoded.info.name);
-    println!("  Piece Length: {}", decoded.info.plength);
-    println!("  Number of Pieces: {}", decoded.num_pieces());
-    if let Some(length) = decoded.info.length {
-        println!("  File Length: {} bytes", length);
-    }
+    let decoded =
+        serde_bencode::from_bytes(data).map_err(|e| format!("Failed to decode torrent: {}", e))?;
     Ok(decoded)
 }
 
@@ -55,7 +42,7 @@ mod tests {
     #[test]
     fn test_parse_torrent() {
         let data = create_test_torrent();
-        let result = parse_torrent(&data);
+        let result = decode_torrent(&data);
 
         assert!(result.is_ok());
         let torrent = result.unwrap();
@@ -69,7 +56,7 @@ mod tests {
     #[test]
     fn test_parse_invalid_torrent() {
         let invalid_data = b"this is not bencode";
-        let result = parse_torrent(invalid_data);
+        let result = decode_torrent(invalid_data);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Failed to decode torrent"));
     }
@@ -78,7 +65,7 @@ mod tests {
     fn test_info_hash_consistency() {
         // Same torrent should produce same info hash
         let data = create_test_torrent();
-        let torrent = parse_torrent(&data).unwrap();
+        let torrent = decode_torrent(&data).unwrap();
 
         let hash1 = calculate_info_hash(&torrent);
         let hash2 = calculate_info_hash(&torrent);
@@ -100,7 +87,7 @@ mod tests {
         };
 
         let data = serde_bencode::to_bytes(&torrent).unwrap();
-        let parsed = parse_torrent(&data).unwrap();
+        let parsed = decode_torrent(&data).unwrap();
 
         assert_eq!(parsed.info.name, "large_file.bin");
         assert_eq!(parsed.info.pieces.len(), 60);

@@ -1,19 +1,21 @@
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::net::{TcpListener, TcpStream};
 use std::{fs, io};
 
 use crate::decode_torrent;
 use crate::peer::auth_proof::AuthProof;
-use crate::peer::extension_protocol::ExtendedHandshake;
+use crate::peer::extension_protocol::{ExtendedHandshake, UT_METADATA_EXTENSION_ID};
 use crate::peer::protocol::{X402MessageId, read_message};
 use crate::peer::tracker_client::{AnnounceResponse, TrackerClient, TrackerClientError};
+use crate::peer::ut_metadata::{MetadataMessage, calculate_num_pieces};
 use crate::torrent::parser::calculate_info_hash;
 use svix_ksuid::{KsuidLike, KsuidMs};
 
 use crate::peer::handshake::{Handshake, generate_peer_id};
 
 #[derive(Debug)]
-struct TorrentManager {
+pub struct TorrentManager {
     torrents: HashMap<[u8; 20], TorrentWithMetadata>,
 }
 
@@ -56,23 +58,33 @@ pub struct Seeder {
     port: u16,
     /// Our peer ID
     peer_id: KsuidMs,
-    /// Info hashes we're serving
+
+    /// info_hashes of the torrents we are seeding
     pub info_hashes: Vec<[u8; 20]>,
 }
 
 impl Seeder {
-    pub fn new(address: String, port: u16) -> Self {
-        Seeder {
-            address,
-            port,
-            peer_id: generate_peer_id(),
-            info_hashes: Vec::new(),
-        }
-    }
+    const MAX_METADATA_REQUEST_QUEUE: usize = 8;
+    const MAX_METADATA_RESPONSES_PER_TICK: usize = 2;
 
-    /// Add an info hash that this seeder can serve
-    pub fn add_torrent(&mut self, info_hash: [u8; 20]) {
-        self.info_hashes.push(info_hash);
+    pub fn new(address: String, port: u16) -> Option<(Self, TorrentManager)> {
+        // get info hashes of all torrents in the ./torrents directory
+        let torrent_manager = TorrentManager::load_torrents();
+        let info_hashes = torrent_manager
+            .torrents
+            .keys()
+            .copied()
+            .collect::<Vec<[u8; 20]>>();
+
+        Some((
+            Self {
+                address,
+                port,
+                peer_id: generate_peer_id(),
+                info_hashes,
+            },
+            torrent_manager,
+        ))
     }
 
     pub async fn announce_to_tracker(
@@ -92,29 +104,8 @@ impl Seeder {
             .await
     }
 
-    /// Add an info hash from hex string
-    pub fn add_torrent_hex(&mut self, info_hash_hex: &str) -> Result<(), String> {
-        if info_hash_hex.len() != 40 {
-            return Err(format!(
-                "Invalid info hash length: expected 40, got {}",
-                info_hash_hex.len()
-            ));
-        }
-
-        let mut info_hash = [0u8; 20];
-        for i in 0..20 {
-            info_hash[i] = u8::from_str_radix(&info_hash_hex[i * 2..i * 2 + 2], 16)
-                .map_err(|e| format!("Invalid hex: {}", e))?;
-        }
-
-        self.add_torrent(info_hash);
-        Ok(())
-    }
-
     /// Start listening for incoming connections
-    pub fn listen(&self) -> io::Result<()> {
-        let torrent_manager = TorrentManager::load_torrents();
-
+    pub fn listen(&self, torrent_manager: &TorrentManager) -> io::Result<()> {
         let addr = format!("{}:{}", self.address, self.port);
         let listener = TcpListener::bind(&addr)?;
         println!("Seeder listening on {}", addr);
@@ -154,9 +145,9 @@ impl Seeder {
         println!("  Peer ID: {}", hex::encode(handshake.peer_id.bytes()));
 
         // Check if we have this torrent
-        if !self.info_hashes.contains(&handshake.info_hash) {
+        if torrent_manager.get_torrent(&handshake.info_hash).is_none() {
             return Err(format!(
-                "We don't have torrent with info hash: {}",
+                "We do not have the torrent for info hash: {}",
                 handshake.info_hash_hex()
             ));
         }
@@ -170,8 +161,24 @@ impl Seeder {
             .map_err(|e| format!("Failed to send handshake: {}", e))?;
 
         println!("Handshake successful!");
+
+        let metadata = torrent_manager
+            .get_torrent(&handshake.info_hash)
+            .ok_or_else(|| {
+                format!(
+                    "Missing torrent metadata for info hash: {}",
+                    handshake.info_hash_hex()
+                )
+            })?
+            .metadata
+            .clone();
+        let metadata_size = metadata.len() as u32;
+        let metadata_piece_count = calculate_num_pieces(metadata_size);
+
         // ID that the peer expects us to use when sending ut_metadata
-        let mut peer_ut_metadata: Option<u8> = None;
+        let mut peer_ut_metadata_id: Option<u8> = None;
+        let mut metadata_request_queue: VecDeque<u32> = VecDeque::new();
+        let mut pop_from_back = false;
 
         // To avoid sending our handshake more than once
         let mut sent_extended_handshake = false;
@@ -193,39 +200,92 @@ impl Seeder {
                             .map_err(|e| format!("Failed to process extended handshake: {}", e))?;
 
                             // Save if the peer supports ut_metadata
-                            peer_ut_metadata = peer_handshake.m.get("ut_metadata").copied();
+                            peer_ut_metadata_id = peer_handshake.m.get("ut_metadata").copied();
 
-                            if let Some(id) = peer_ut_metadata {
+                            if let Some(id) = peer_ut_metadata_id {
                                 println!("Peer supports ut_metadata with id {}", id);
                             } else {
                                 println!("Peer does not support ut_metadata");
                             }
 
                             // Send our handshake only once
-                            if !sent_extended_handshake
-                                && let Some(torrent) =
-                                    torrent_manager.get_torrent(&handshake.info_hash)
-                            {
+                            if !sent_extended_handshake {
                                 let mut my_handshake = ExtendedHandshake::new();
-
-                                let metadata = torrent.metadata.clone();
-                                my_handshake.metadata_size = Some(metadata.len() as u64);
+                                my_handshake.metadata_size = Some(metadata_size as u64);
 
                                 my_handshake.send_extended_handshake(&mut stream);
+                                println!(
+                                    "Sent extended handshake with metadata size {:?}",
+                                    my_handshake
+                                );
 
                                 sent_extended_handshake = true;
                             }
                         }
 
-                        // ----- OTHER EXTENDED MESSAGES -----
                         Some(ext_id) => {
-                            if Some(ext_id) == peer_ut_metadata {
-                                println!("Received ut_metadata message");
+                            if ext_id == UT_METADATA_EXTENSION_ID {
+                                println!("Received ut_metadata message with id {}", ext_id);
+                                let requested_piece =
+                                    MetadataMessage::receive_ut_metadata_request(&message)
+                                        .ok_or_else(|| {
+                                            "Invalid ut_metadata request payload from peer"
+                                                .to_string()
+                                        })?;
 
-                                // TODO: parse ut_metadata message and handle accordingly
-                                // - request
-                                // - data
-                                // - reject
+                                let response_ext_id = peer_ut_metadata_id.ok_or_else(|| {
+                                    "Peer did not advertise ut_metadata id; cannot send metadata response"
+                                        .to_string()
+                                })?;
+
+                                if requested_piece >= metadata_piece_count {
+                                    println!(
+                                        "Rejecting out-of-range metadata piece {} (max {})",
+                                        requested_piece,
+                                        metadata_piece_count.saturating_sub(1)
+                                    );
+                                    MetadataMessage::send_ut_metadata_reject(
+                                        &mut stream,
+                                        response_ext_id,
+                                        requested_piece,
+                                    )
+                                    .map_err(|e| {
+                                        format!("Failed to send ut_metadata reject: {}", e)
+                                    })?;
+                                    continue;
+                                }
+
+                                if metadata_request_queue.len() >= Self::MAX_METADATA_REQUEST_QUEUE
+                                {
+                                    println!(
+                                        "Queue full ({}). Rejecting piece {}",
+                                        Self::MAX_METADATA_REQUEST_QUEUE,
+                                        requested_piece
+                                    );
+                                    MetadataMessage::send_ut_metadata_reject(
+                                        &mut stream,
+                                        response_ext_id,
+                                        requested_piece,
+                                    )
+                                    .map_err(|e| {
+                                        format!("Failed to send queue overflow reject: {}", e)
+                                    })?;
+                                } else {
+                                    metadata_request_queue.push_back(requested_piece);
+                                    println!(
+                                        "Queued metadata piece {} (queue: {})",
+                                        requested_piece,
+                                        metadata_request_queue.len()
+                                    );
+                                }
+
+                                self.flush_metadata_queue(
+                                    &mut stream,
+                                    response_ext_id,
+                                    &metadata,
+                                    &mut metadata_request_queue,
+                                    &mut pop_from_back,
+                                )?;
                             } else {
                                 println!("Received unknown extended message id {}", ext_id);
                             }
@@ -291,6 +351,56 @@ impl Seeder {
             }
         }
     }
+
+    fn flush_metadata_queue(
+        &self,
+        stream: &mut TcpStream,
+        ext_id: u8,
+        metadata: &[u8],
+        queue: &mut VecDeque<u32>,
+        pop_from_back: &mut bool,
+    ) -> Result<(), String> {
+        let mut sent = 0usize;
+        while sent < Self::MAX_METADATA_RESPONSES_PER_TICK {
+            let next_piece = if *pop_from_back {
+                queue.pop_back()
+            } else {
+                queue.pop_front()
+            };
+
+            let Some(piece) = next_piece else {
+                break;
+            };
+
+            let Some((start, end)) = MetadataMessage::metadata_piece_bounds(piece, metadata.len())
+            else {
+                MetadataMessage::send_ut_metadata_reject(stream, ext_id, piece)
+                    .map_err(|e| format!("Failed to send ut_metadata reject: {}", e))?;
+                continue;
+            };
+
+            MetadataMessage::send_ut_metadata_data(
+                stream,
+                ext_id,
+                piece,
+                metadata.len() as u32,
+                &metadata[start..end],
+            )
+            .map_err(|e| format!("Failed to send ut_metadata data: {}", e))?;
+
+            println!(
+                "Sent metadata piece {} ({} bytes, queue remaining: {})",
+                piece,
+                end - start,
+                queue.len()
+            );
+
+            *pop_from_back = !*pop_from_back;
+            sent += 1;
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -299,35 +409,8 @@ mod tests {
 
     #[test]
     fn test_seeder_new() {
-        let seeder = Seeder::new("127.0.0.1".to_string(), 6881);
+        let (seeder, _) = Seeder::new("127.0.0.1".to_string(), 6881).unwrap();
         assert_eq!(seeder.address, "127.0.0.1");
         assert_eq!(seeder.port, 6881);
-        assert_eq!(seeder.info_hashes.len(), 0);
-    }
-
-    #[test]
-    fn test_add_torrent() {
-        let mut seeder = Seeder::new("127.0.0.1".to_string(), 6881);
-        let info_hash = [1u8; 20];
-        seeder.add_torrent(info_hash);
-        assert_eq!(seeder.info_hashes.len(), 1);
-        assert_eq!(seeder.info_hashes[0], info_hash);
-    }
-
-    #[test]
-    fn test_add_torrent_hex() {
-        let mut seeder = Seeder::new("127.0.0.1".to_string(), 6881);
-        let hex = "d2474e86c95b19b8bcfdb92bc12c9d44667cfa36";
-
-        let result = seeder.add_torrent_hex(hex);
-        assert!(result.is_ok());
-        assert_eq!(seeder.info_hashes.len(), 1);
-    }
-
-    #[test]
-    fn test_add_torrent_hex_invalid() {
-        let mut seeder = Seeder::new("127.0.0.1".to_string(), 6881);
-        let result = seeder.add_torrent_hex("invalid");
-        assert!(result.is_err());
     }
 }

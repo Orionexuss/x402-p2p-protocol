@@ -11,11 +11,6 @@ struct Cli {
     command: Commands,
 }
 
-#[derive(Serialize, Deserialize)]
-struct SeederConfig {
-    info_hashes: Vec<String>,
-}
-
 #[derive(Subcommand)]
 enum Commands {
     Create {
@@ -43,9 +38,6 @@ enum Commands {
 
         #[arg(long)]
         listen: Option<String>,
-
-        #[arg(long, short = 'c', default_value = "seeder.json")]
-        config: String,
 
         #[arg(long, default_value = "http://localhost:6969")]
         tracker: String,
@@ -155,12 +147,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("Inspecting torrent file: {}", file);
                 // Read the torrent file
                 match fs::read(&file) {
-                    Ok(data) => {
-                        if let Err(e) = x402_core::decode_torrent(&data) {
-                            eprintln!("Error decoding torrent: {}", e);
+                    Ok(data) => match x402_core::decode_torrent(&data) {
+                        Ok(torrent) => {
+                            println!("Name: {}", torrent.info.name);
+                            println!("Piece Length: {} bytes", torrent.info.plength);
+                            println!("Total Length: {} bytes", torrent.total_length());
+                            println!("Number of Pieces: {}", torrent.info.pieces.len() / 20);
+                            println!("Trackers: {}", torrent.announce);
+                            let info_hash = calculate_info_hash(&torrent);
+                            println!("Info Hash: {}", hex::encode(info_hash));
+                        }
+                        Err(e) => {
+                            eprintln!("Error decoding torrent file: {}", e);
                             std::process::exit(1);
                         }
-                    }
+                    },
                     Err(e) => {
                         eprintln!("Error reading file {}: {}", file, e);
                         std::process::exit(1);
@@ -171,7 +172,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Serve {
             price,
             listen,
-            config,
             tracker,
         } => {
             let address = listen.unwrap_or_else(|| "0.0.0.0:6881".to_string());
@@ -187,36 +187,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
 
             println!(
-                "Starting x402 seeder on {}:{} with price {}",
+                "Starting x402 seeder on {}:{} with price {}\n",
                 addr, port, price
             );
 
-            let mut seeder = x402_core::Seeder::new(addr, port);
+            let (seeder, torrent_manager) = x402_core::Seeder::new(addr, port).unwrap();
 
-            // Load config file
-            println!("Loading config from: {}", config);
-            match fs::read_to_string(&config) {
-                Ok(content) => match serde_json::from_str::<SeederConfig>(&content) {
-                    Ok(cfg) => {
-                        println!("Found {} info hashes in config", cfg.info_hashes.len());
-                        for info_hash_hex in &cfg.info_hashes {
-                            match seeder.add_torrent_hex(info_hash_hex) {
-                                Ok(_) => println!("  Added: {}", info_hash_hex),
-                                Err(e) => eprintln!("  Error adding {}: {}", info_hash_hex, e),
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("Error parsing config: {}", e);
-                        std::process::exit(1);
-                    }
-                },
-                Err(e) => {
-                    eprintln!("Error reading config file: {}", e);
-                    eprintln!("Create a config file '{}' with format:", config);
-                    eprintln!("{{\"info_hashes\": [\"<40-char-hex>\"]}}");
-                    std::process::exit(1);
-                }
+            println!("Serving these info hashes:");
+            for hash in &seeder.info_hashes {
+                println!("  {}", hex::encode(hash));
             }
 
             // Announce all torrents to tracker
@@ -245,7 +224,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             println!("\nStarting listener...");
-            if let Err(e) = seeder.listen() {
+            if let Err(e) = seeder.listen(&torrent_manager) {
                 eprintln!("Error starting seeder: {}", e);
                 std::process::exit(1);
             }
@@ -255,7 +234,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("Source: {}", source);
             println!();
             let mut tracker;
-            let mut is_magnet: bool;
+            let is_magnet: bool;
 
             // Parse source (magnet or .torrent file)
             let (info_hash, file_name, total_size) = if source.starts_with("magnet:?") {

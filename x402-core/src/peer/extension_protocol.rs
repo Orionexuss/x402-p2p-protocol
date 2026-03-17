@@ -2,8 +2,10 @@ use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, net::TcpStream};
 
 use crate::{
-    peer::protocol::ProtocolError, read_message, write_message, X402Message, X402MessageId,
+    peer::protocol::ProtocolError, write_message, X402Message, X402MessageId,
 };
+
+pub const UT_METADATA_EXTENSION_ID: u8 = 1;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ExtendedHandshake {
@@ -23,7 +25,7 @@ impl ExtendedHandshake {
     pub fn new() -> Self {
         let mut extensions = HashMap::new();
 
-        extensions.insert("ut_metadata".to_string(), 1);
+        extensions.insert("ut_metadata".to_string(), UT_METADATA_EXTENSION_ID);
 
         Self {
             m: extensions,
