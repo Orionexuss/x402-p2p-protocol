@@ -7,18 +7,15 @@ enum MetadataMessageType {
     Reject = 2,
 }
 
-const MAX_METADATA_SIZE: u32 = 16 * 1024; // 16 KiB
-pub const METADATA_PIECE_SIZE: u32 = MAX_METADATA_SIZE;
-
+pub const METADATA_PIECE_SIZE: u32 = 2 * 1024; // 2 KiB;
+                                               //
 pub fn calculate_num_pieces(metadata_size: u32) -> u32 {
     metadata_size.div_ceil(METADATA_PIECE_SIZE)
 }
 
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    peer::extension_protocol::UT_METADATA_EXTENSION_ID, write_message, X402Message, X402MessageId,
-};
+use crate::{write_message, X402Message, X402MessageId};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MetadataMessage {
@@ -58,15 +55,23 @@ impl MetadataMessage {
         stream: &mut TcpStream,
         extended_message_id: u8,
         piece: u32,
-        total_size: u32,
         data_block: &[u8],
     ) -> std::io::Result<()> {
+        if data_block.len() > METADATA_PIECE_SIZE as usize {
+            panic!("Data block size exceeds METADATA_PIECE_SIZE");
+        }
+
         let mut payload = serde_bencode::to_bytes(&MetadataMessage {
             msg_type: MetadataMessageType::Data as u8,
             piece,
-            total_size: Some(total_size),
+            total_size: Some(data_block.len() as u32),
         })
         .unwrap();
+
+        println!(
+            "Sending metadata piece {:?} ",
+            serde_bencode::from_bytes::<MetadataMessage>(&payload)
+        );
 
         payload.extend_from_slice(data_block);
 
@@ -109,13 +114,16 @@ impl MetadataMessage {
         Some(request.piece)
     }
 
-    pub fn receive_ut_metadata_data(message: &X402Message) -> Option<(u32, Vec<u8>)> {
+    pub fn receive_ut_metadata_data(
+        message: &X402Message,
+        expected_extended_message_id: u8,
+    ) -> Option<(u32, Vec<u8>)> {
         if message.id != X402MessageId::Extended {
             println!("Received non-data message or wrong extended message ID");
             return None;
         }
 
-        if message.extended_message_id != Some(UT_METADATA_EXTENSION_ID) {
+        if message.extended_message_id != Some(expected_extended_message_id) {
             println!("Received message with wrong extended message ID");
             return None;
         }
@@ -126,7 +134,7 @@ impl MetadataMessage {
             println!("Received non-data message");
             return None;
         }
-        if data_msg.total_size > Some(MAX_METADATA_SIZE) {
+        if data_msg.total_size > Some(METADATA_PIECE_SIZE) {
             println!("Received metadata piece with invalid total size");
             return None;
         }
@@ -135,6 +143,18 @@ impl MetadataMessage {
         let data_block = message.payload[data_block_start..].to_vec();
 
         Some((data_msg.piece, data_block))
+    }
+
+    pub fn is_ut_metadata_reject(message: &X402Message, expected_extended_message_id: u8) -> bool {
+        if message.id != X402MessageId::Extended
+            || message.extended_message_id != Some(expected_extended_message_id)
+        {
+            return false;
+        }
+
+        let meta: MetadataMessage = serde_bencode::from_bytes(&message.payload).unwrap();
+
+        meta.msg_type == MetadataMessageType::Reject as u8
     }
 
     pub fn metadata_piece_bounds(piece: u32, total_size: usize) -> Option<(usize, usize)> {

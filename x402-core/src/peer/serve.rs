@@ -10,6 +10,7 @@ use crate::peer::protocol::{X402MessageId, read_message};
 use crate::peer::tracker_client::{AnnounceResponse, TrackerClient, TrackerClientError};
 use crate::peer::ut_metadata::{MetadataMessage, calculate_num_pieces};
 use crate::torrent::parser::calculate_info_hash;
+use crate::torrent::types::Info;
 use svix_ksuid::{KsuidLike, KsuidMs};
 
 use crate::peer::handshake::{Handshake, generate_peer_id};
@@ -20,7 +21,7 @@ pub struct TorrentManager {
 }
 
 #[derive(Debug)]
-struct TorrentWithMetadata {
+pub struct TorrentWithMetadata {
     metadata: Vec<u8>,
 }
 
@@ -37,6 +38,11 @@ impl TorrentManager {
                 {
                     let info_hash = calculate_info_hash(&torrent);
                     let metadata = torrent.get_torrent_metadata();
+                    println!(
+                        " loaded torrent: {} with info: {:?}",
+                        path.display(),
+                        serde_bencode::from_bytes::<Info>(&metadata),
+                    );
                     let torrent_with_metadata = TorrentWithMetadata { metadata };
                     torrents.insert(info_hash, torrent_with_metadata);
                 }
@@ -116,7 +122,7 @@ impl Seeder {
                 Ok(stream) => {
                     println!();
                     println!("New connection from: {}", stream.peer_addr()?);
-                    if let Err(e) = self.handle_connection(stream, &torrent_manager) {
+                    if let Err(e) = self.handle_connection(stream, torrent_manager) {
                         eprintln!("Error handling connection: {}", e);
                     }
                 }
@@ -383,7 +389,6 @@ impl Seeder {
                 stream,
                 ext_id,
                 piece,
-                metadata.len() as u32,
                 &metadata[start..end],
             )
             .map_err(|e| format!("Failed to send ut_metadata data: {}", e))?;

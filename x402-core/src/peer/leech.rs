@@ -3,12 +3,14 @@ use crate::peer::extension_protocol::ExtendedHandshake;
 use crate::peer::handshake::{generate_peer_id, Handshake};
 use crate::peer::protocol::X402MessageId;
 use crate::peer::tracker_client::{PeerInfo, TrackerClient};
-use crate::peer::ut_metadata::{calculate_num_pieces, MetadataMessage};
+use crate::peer::ut_metadata::{calculate_num_pieces, MetadataMessage, METADATA_PIECE_SIZE};
 use crate::read_message;
 use dirs::home_dir;
+use sha1::Digest;
 use solana_sdk::signature::Keypair;
-use solana_sdk::signer::{EncodableKey, Signer};
-use std::io::{self, Read};
+use solana_sdk::signer::EncodableKey;
+use std::collections::HashSet;
+use std::io;
 use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -37,6 +39,9 @@ pub enum LeecherError {
 
     #[error("Authentication failed")]
     AuthError(),
+
+    #[error("Metadata protocol error: {0}")]
+    MetadataError(String),
 }
 
 pub struct Leecher {
@@ -190,63 +195,148 @@ impl Leecher {
         // implement BEP 10
         if is_magnet {
             ExtendedHandshake::new().send_extended_handshake(&mut stream);
-            const MAX_METADATA_SIZE: u32 = 4 * 1024 * 1024;
-
-            let mut peer_ut_metadata_id: Option<u8> = None;
-            let metadata_size: u32;
+            const MAX_METADATA_SIZE: u32 = 4 * 1024 * 1024; // 4 MB
 
             // Wait for extended handshake response
-            loop {
+            let (peer_ut_metadata_id, metadata_size) = loop {
                 let message = read_message(&mut stream).unwrap();
 
                 if message.id == X402MessageId::Extended && message.extended_message_id == Some(0) {
                     let peer_handshake =
                         ExtendedHandshake::receive_extended_handshake(&message).unwrap();
 
-                    peer_ut_metadata_id = peer_handshake.m.get("ut_metadata").copied();
-                    metadata_size = peer_handshake.metadata_size.unwrap() as u32;
+                    let peer_ut_metadata_id = peer_handshake.m.get("ut_metadata").copied();
+                    let metadata_size = peer_handshake.metadata_size.unwrap() as u32;
 
-                    if let Some(id) = peer_ut_metadata_id {
-                        println!("Peer supports ut_metadata with id {}", id);
-                    } else {
+                    if peer_ut_metadata_id.is_none() {
                         panic!("Peer does not support ut_metadata");
                     }
 
                     if metadata_size > MAX_METADATA_SIZE {
                         panic!("metadata too large");
                     }
-                    break;
+                    break (peer_ut_metadata_id, metadata_size);
                 }
-            }
+            };
 
-            let ut_metadata_id = peer_ut_metadata_id.unwrap();
+            let peer_ut_metadata_id = peer_ut_metadata_id.unwrap();
             let calculated_pieces = calculate_num_pieces(metadata_size);
 
             // Request pieces in a pipelined manner (e.g. 8 pieces at a time)
-            let pipeline = 8.min(calculated_pieces);
+            let pipeline = 2.min(calculated_pieces);
+            println!(
+                "Requesting metadata in {} pieces ({} bytes total)",
+                calculated_pieces, metadata_size
+            );
+
+            let mut in_flight: HashSet<u32> = HashSet::new();
+            let mut received_count = 0u32;
+            let mut pieces = vec![None::<Vec<u8>>; calculated_pieces as usize];
 
             for piece in 0..pipeline {
-                MetadataMessage::send_ut_metadata_request(&mut stream, ut_metadata_id, piece)
-                    .unwrap();
-                println!("Requested metadata piece {}", piece);
+                MetadataMessage::send_ut_metadata_request(&mut stream, peer_ut_metadata_id, piece)
+                    .map_err(|e| LeecherError::MetadataError(e.to_string()))?;
+                in_flight.insert(piece);
             }
-            /* let mut next_piece = pipeline;
-             loop {
-                let msg = read_message(&mut stream)?;
 
-                if let Some(piece_index) = parse_metadata_piece(&msg) {
-                    save_piece(piece_index);
+            let mut next_piece = pipeline;
 
-                    if next_piece < calculated_pieces {
-                        send_request(next_piece);
-                        next_piece += 1;
+            while received_count < calculated_pieces {
+                let msg = read_message(&mut stream)
+                    .map_err(|e| LeecherError::MetadataError(e.to_string()))?;
+
+                if MetadataMessage::is_ut_metadata_reject(&msg, peer_ut_metadata_id) {
+                    return Err(LeecherError::MetadataError(
+                        "Seeder rejected a metadata request".to_string(),
+                    ));
+                }
+
+                let Some((piece, data_block)) =
+                    MetadataMessage::receive_ut_metadata_data(&msg, peer_ut_metadata_id)
+                else {
+                    // Ignore unrelated protocol messages while metadata is in progress.
+                    continue;
+                };
+
+                if piece >= calculated_pieces {
+                    return Err(LeecherError::MetadataError(format!(
+                        "Received out-of-range metadata piece {} (expected < {})",
+                        piece, calculated_pieces
+                    )));
+                }
+
+                // The last piece may be smaller than METADATA_PIECE_SIZE, so calculate the expected size for this piece.
+                let expected_len = if piece == calculated_pieces - 1 {
+                    let remainder = (metadata_size as usize) % (METADATA_PIECE_SIZE as usize);
+                    if remainder == 0 {
+                        // If remainder is 0, it means the last piece is exactly METADATA_PIECE_SIZE.
+                        METADATA_PIECE_SIZE as usize
+                    } else {
+                        remainder
                     }
+                } else {
+                    METADATA_PIECE_SIZE as usize
+                };
+
+                if data_block.len() != expected_len {
+                    return Err(LeecherError::MetadataError(format!(
+                        "Piece {} has invalid size {} (expected {})",
+                        piece,
+                        data_block.len(),
+                        expected_len
+                    )));
                 }
 
-                if all_pieces_downloaded() {
-                    break;
+                in_flight.remove(&piece);
+
+                if pieces[piece as usize].is_none() {
+                    pieces[piece as usize] = Some(data_block);
+                    received_count += 1;
+                    println!(
+                        "Received metadata piece {} ({}/{})",
+                        piece, received_count, calculated_pieces
+                    );
                 }
-            } */
+
+                while in_flight.len() < pipeline as usize && next_piece < calculated_pieces {
+                    MetadataMessage::send_ut_metadata_request(
+                        &mut stream,
+                        peer_ut_metadata_id,
+                        next_piece,
+                    )
+                    .map_err(|e| LeecherError::MetadataError(e.to_string()))?;
+                    in_flight.insert(next_piece);
+                    next_piece += 1;
+                }
+            }
+
+            let mut metadata = Vec::with_capacity(metadata_size as usize);
+            for (idx, piece) in pieces.into_iter().enumerate() {
+                let piece = piece.ok_or_else(|| {
+                    LeecherError::MetadataError(format!("Missing metadata piece {}", idx))
+                })?;
+                metadata.extend_from_slice(&piece);
+            }
+
+            if metadata.len() != metadata_size as usize {
+                return Err(LeecherError::MetadataError(format!(
+                    "Reconstructed metadata size mismatch: got {}, expected {}",
+                    metadata.len(),
+                    metadata_size
+                )));
+            }
+
+            println!("Metadata download complete ({} bytes)", metadata.len());
+
+            let calculated_info_hash = sha1::Sha1::digest(&metadata);
+
+            if calculated_info_hash.as_slice() != self.info_hash {
+                return Err(LeecherError::MetadataError(format!(
+                    "Info hash mismatch: calculated {}, expected {}",
+                    hex::encode(calculated_info_hash),
+                    hex::encode(self.info_hash)
+                )));
+            }
         }
 
         // path ~/.config/solana/id.json
