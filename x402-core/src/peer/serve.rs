@@ -91,6 +91,7 @@ impl Seeder {
     pub async fn announce_to_tracker(
         &self,
         tracker_url: String,
+        price: u64,
         info_hash: [u8; 20],
     ) -> Result<AnnounceResponse, TrackerClientError> {
         let tracker_client = TrackerClient::new(tracker_url);
@@ -101,7 +102,7 @@ impl Seeder {
         let event = Some("completed");
 
         tracker_client
-            .announce(&info_hash, peer_id, port, &pubkey, left, event)
+            .announce(&info_hash, price, peer_id, port, &pubkey, left, event)
             .await
     }
 

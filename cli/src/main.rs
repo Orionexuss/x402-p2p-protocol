@@ -1,7 +1,107 @@
 use clap::{Parser, Subcommand};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use std::collections::HashMap;
 use std::fs;
+use std::path::Path;
 use x402_core::torrent::parser::calculate_info_hash;
+
+const SEEDER_CONFIG_PATH: &str = "seeder.json";
+
+#[derive(Debug, Deserialize)]
+struct SeederConfig {
+    info_hashes: Vec<HashMap<String, serde_json::Value>>,
+}
+
+fn load_seeder_prices(config_path: &Path) -> Result<HashMap<[u8; 20], u64>, String> {
+    let config_data = fs::read_to_string(config_path)
+        .map_err(|e| format!("Failed to read {}: {}", config_path.display(), e))?;
+    let config: SeederConfig = serde_json::from_str(&config_data)
+        .map_err(|e| format!("Invalid {} format: {}", config_path.display(), e))?;
+
+    let mut prices_by_info_hash = HashMap::new();
+
+    for entry in config.info_hashes {
+        if entry.len() != 1 {
+            return Err(
+                "Each item in seeder.json info_hashes must contain exactly one info hash to price mapping"
+                    .to_string(),
+            );
+        }
+
+        let (info_hash_hex, raw_price) = entry.into_iter().next().unwrap();
+        let info_hash = parse_info_hash(&info_hash_hex)?;
+
+        let price_str = raw_price.as_str().ok_or_else(|| {
+            format!(
+                "Price for info hash {} must be a string like \"5.00\"; JSON numbers do not preserve trailing zeros",
+                info_hash_hex
+            )
+        })?;
+
+        let price = parse_price_to_minor_units(price_str)?;
+
+        if prices_by_info_hash.insert(info_hash, price).is_some() {
+            return Err(format!(
+                "Duplicate price entry found for info hash {}",
+                info_hash_hex
+            ));
+        }
+    }
+
+    Ok(prices_by_info_hash)
+}
+
+fn parse_info_hash(info_hash_hex: &str) -> Result<[u8; 20], String> {
+    if info_hash_hex.len() != 40 {
+        return Err(format!(
+            "Invalid info hash {}: expected 40 hex characters",
+            info_hash_hex
+        ));
+    }
+
+    let decoded = hex::decode(info_hash_hex)
+        .map_err(|e| format!("Invalid info hash {}: {}", info_hash_hex, e))?;
+
+    let mut info_hash = [0u8; 20];
+    info_hash.copy_from_slice(&decoded);
+    Ok(info_hash)
+}
+
+fn parse_price_to_minor_units(price: &str) -> Result<u64, String> {
+    let (whole, fractional) = price
+        .split_once('.')
+        .ok_or_else(|| format!("Invalid price {}: expected format X.YY", price))?;
+
+    if whole.is_empty() || !whole.chars().all(|c| c.is_ascii_digit()) {
+        return Err(format!(
+            "Invalid price {}: whole part must be digits",
+            price
+        ));
+    }
+
+    if fractional.len() != 2 || !fractional.chars().all(|c| c.is_ascii_digit()) {
+        return Err(format!(
+            "Invalid price {}: fractional part must contain exactly two digits",
+            price
+        ));
+    }
+
+    let whole = whole
+        .parse::<u64>()
+        .map_err(|e| format!("Invalid price {}: {}", price, e))?;
+    let fractional = fractional
+        .parse::<u64>()
+        .map_err(|e| format!("Invalid price {}: {}", price, e))?;
+
+    whole
+        .checked_mul(100)
+        .and_then(|value| value.checked_add(fractional))
+        .ok_or_else(|| format!("Invalid price {}: value is too large", price))
+}
+
+fn format_minor_units(price: u64) -> String {
+    format!("{}.{:02}", price / 100, price % 100)
+}
 
 #[derive(Parser)]
 #[command(name = "x402")]
@@ -33,9 +133,6 @@ enum Commands {
         file: String,
     },
     Serve {
-        #[arg(long, default_value = "0")]
-        price: u64,
-
         #[arg(long)]
         listen: Option<String>,
 
@@ -169,11 +266,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        Commands::Serve {
-            price,
-            listen,
-            tracker,
-        } => {
+        Commands::Serve { listen, tracker } => {
             let address = listen.unwrap_or_else(|| "0.0.0.0:6881".to_string());
             let parts: Vec<&str> = address.split(':').collect();
 
@@ -186,10 +279,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ("0.0.0.0".to_string(), 6881)
             };
 
-            println!(
-                "Starting x402 seeder on {}:{} with price {}\n",
-                addr, port, price
-            );
+            println!("Starting x402 seeder on {}:{}", addr, port);
+
+            let seeder_prices =
+                load_seeder_prices(Path::new(SEEDER_CONFIG_PATH)).unwrap_or_else(|e| {
+                    eprintln!("Seeder price configuration error: {}", e);
+                    std::process::exit(1);
+                });
 
             let (seeder, torrent_manager) = x402_core::Seeder::new(addr, port).unwrap();
 
@@ -202,14 +298,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if !seeder.info_hashes.is_empty() {
                 println!("\nAnnouncing to tracker: {}", tracker);
                 for info_hash in &seeder.info_hashes {
+                    let price = *seeder_prices.get(info_hash).unwrap_or_else(|| {
+                        eprintln!(
+                            "Missing price in {} for info hash {}",
+                            SEEDER_CONFIG_PATH,
+                            hex::encode(info_hash)
+                        );
+                        std::process::exit(1);
+                    });
+
                     match seeder
-                        .announce_to_tracker(tracker.clone(), *info_hash)
+                        .announce_to_tracker(tracker.clone(), price, *info_hash)
                         .await
                     {
                         Ok(response) => {
                             println!(
-                                "  Announced {} - {} seeders, {} leechers",
+                                "  Announced {} at price {} - {} seeders, {} leechers",
                                 hex::encode(info_hash),
+                                format_minor_units(price),
                                 response.seeders.len(),
                                 response.leechers.len()
                             );
@@ -347,4 +453,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_price_to_minor_units;
+
+    #[test]
+    fn parses_valid_two_decimal_prices() {
+        assert_eq!(parse_price_to_minor_units("5.00").unwrap(), 500);
+        assert_eq!(parse_price_to_minor_units("1.24").unwrap(), 124);
+        assert_eq!(parse_price_to_minor_units("529.43").unwrap(), 52943);
+    }
+
+    #[test]
+    fn rejects_invalid_price_formats() {
+        assert!(parse_price_to_minor_units("5").is_err());
+        assert!(parse_price_to_minor_units("5.0").is_err());
+        assert!(parse_price_to_minor_units("5.000").is_err());
+        assert!(parse_price_to_minor_units("abc").is_err());
+    }
 }

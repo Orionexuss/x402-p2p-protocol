@@ -90,6 +90,7 @@ impl Leecher {
         let response = tracker_client
             .announce(
                 &self.info_hash,
+                0,
                 self.peer_id.bytes(),
                 6881, // Our listening port
                 &self.pubkey,
@@ -149,6 +150,7 @@ impl Leecher {
         tracker_client
             .announce(
                 &self.info_hash,
+                0,
                 self.peer_id.bytes(),
                 6881,
                 &self.pubkey,
@@ -223,11 +225,7 @@ impl Leecher {
             let calculated_pieces = calculate_num_pieces(metadata_size);
 
             // Request pieces in a pipelined manner (e.g. 8 pieces at a time)
-            let pipeline = 2.min(calculated_pieces);
-            println!(
-                "Requesting metadata in {} pieces ({} bytes total)",
-                calculated_pieces, metadata_size
-            );
+            let pipeline = 8.min(calculated_pieces);
 
             let mut in_flight: HashSet<u32> = HashSet::new();
             let mut received_count = 0u32;
@@ -292,10 +290,6 @@ impl Leecher {
                 if pieces[piece as usize].is_none() {
                     pieces[piece as usize] = Some(data_block);
                     received_count += 1;
-                    println!(
-                        "Received metadata piece {} ({}/{})",
-                        piece, received_count, calculated_pieces
-                    );
                 }
 
                 while in_flight.len() < pipeline as usize && next_piece < calculated_pieces {

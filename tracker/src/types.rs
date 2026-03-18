@@ -42,7 +42,7 @@ impl Swarm {
             info_hash,
             seeders: HashMap::new(),
             leechers: HashMap::new(),
-            min_stake: 0, // Default: no minimum stake (Phase 1)
+            min_stake: 0,      // Default: no minimum stake (Phase 1)
             piece_price: 1000, // Default: 1000 lamports per piece
             created_at: SystemTime::now(),
         }
@@ -85,9 +85,10 @@ pub enum AnnounceEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnnounceRequest {
     pub info_hash: String, // hex encoded
-    pub peer_id: String,   // hex encoded
+    pub price: u64,
+    pub peer_id: String, // hex encoded
     pub port: u16,
-    pub pubkey: String,    // hex encoded
+    pub pubkey: String, // hex encoded
     #[serde(default)]
     pub signature: String, // hex encoded (optional for Phase 1)
     #[serde(default)]

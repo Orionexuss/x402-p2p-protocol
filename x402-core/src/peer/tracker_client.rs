@@ -18,6 +18,7 @@ pub enum TrackerClientError {
 #[derive(Debug, Clone, Serialize)]
 pub struct AnnounceRequest {
     pub info_hash: String,
+    pub price: u64,
     pub peer_id: String,
     pub port: u16,
     pub pubkey: String,
@@ -76,6 +77,7 @@ impl TrackerClient {
     pub async fn announce(
         &self,
         info_hash: &[u8; 20],
+        price: u64,
         peer_id: &[u8; 20],
         port: u16,
         pubkey: &[u8; 32],
@@ -84,6 +86,7 @@ impl TrackerClient {
     ) -> Result<AnnounceResponse, TrackerClientError> {
         let req = AnnounceRequest {
             info_hash: hex::encode(info_hash),
+            price,
             peer_id: hex::encode(peer_id),
             port,
             pubkey: hex::encode(pubkey),

@@ -1,5 +1,5 @@
-use std::net::TcpStream;
 use std::collections::VecDeque;
+use std::net::TcpStream;
 
 #[derive(Debug, Clone, Copy)]
 enum MetadataMessageType {
@@ -8,8 +8,8 @@ enum MetadataMessageType {
     Reject = 2,
 }
 
-pub const METADATA_PIECE_SIZE: u32 = 2 * 1024; // 2 KiB;
-                                               //
+pub const METADATA_PIECE_SIZE: u32 = 16 * 1024; // 16 KiB;
+
 pub fn calculate_num_pieces(metadata_size: u32) -> u32 {
     metadata_size.div_ceil(METADATA_PIECE_SIZE)
 }
