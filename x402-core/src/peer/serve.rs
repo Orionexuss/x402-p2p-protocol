@@ -10,7 +10,6 @@ use crate::peer::protocol::{X402MessageId, read_message};
 use crate::peer::tracker_client::{AnnounceResponse, TrackerClient, TrackerClientError};
 use crate::peer::ut_metadata::{MetadataMessage, calculate_num_pieces};
 use crate::torrent::parser::calculate_info_hash;
-use crate::torrent::types::Info;
 use svix_ksuid::{KsuidLike, KsuidMs};
 
 use crate::peer::handshake::{Handshake, generate_peer_id};
@@ -62,6 +61,9 @@ pub struct Seeder {
 
     /// info_hashes of the torrents we are seeding
     pub info_hashes: Vec<[u8; 20]>,
+
+    /// Announced price per info hash (same value sent to tracker).
+    prices_by_info_hash: HashMap<[u8; 20], u64>,
 }
 
 impl Seeder {
@@ -83,13 +85,14 @@ impl Seeder {
                 port,
                 peer_id: generate_peer_id(),
                 info_hashes,
+                prices_by_info_hash: HashMap::new(),
             },
             torrent_manager,
         ))
     }
 
     pub async fn announce_to_tracker(
-        &self,
+        &mut self,
         tracker_url: String,
         price: u64,
         info_hash: [u8; 20],
@@ -101,9 +104,13 @@ impl Seeder {
         let left = 0u64; // Seeder has all pieces
         let event = Some("completed");
 
-        tracker_client
+        let response = tracker_client
             .announce(&info_hash, price, peer_id, port, &pubkey, left, event)
-            .await
+            .await?;
+
+        self.prices_by_info_hash.insert(info_hash, price);
+
+        Ok(response)
     }
 
     /// Start listening for incoming connections
@@ -156,8 +163,14 @@ impl Seeder {
 
         println!("Info hash matches! Sending handshake response...");
 
+        let seeder_price = self
+            .prices_by_info_hash
+            .get(&handshake.info_hash)
+            .copied()
+            .unwrap_or(0);
+
         // Send our handshake response
-        let response = Handshake::new(handshake.info_hash, self.peer_id);
+        let response = Handshake::new(handshake.info_hash, self.peer_id, seeder_price);
         response
             .send(&mut stream)
             .map_err(|e| format!("Failed to send handshake: {}", e))?;
@@ -314,14 +327,6 @@ impl Seeder {
                     }
 
                     return Err("Peer authentication failed".to_string());
-                }
-
-                X402MessageId::InquirePrice => {
-                    println!("Received InquirePrice (TODO: build and send PriceOffer)");
-                }
-
-                X402MessageId::PriceOffer => {
-                    println!("Received PriceOffer (unexpected for seeder; TODO: validate/ignore)");
                 }
 
                 X402MessageId::LockedPayment => {

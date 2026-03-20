@@ -187,12 +187,13 @@ impl Leecher {
         println!("Connected! Performing handshake...");
 
         // Perform BitTorrent handshake
-        let handshake = Handshake::exchange(&mut stream, self.info_hash, self.peer_id)
+        let handshake = Handshake::exchange(&mut stream, self.info_hash, self.peer_id, 0)
             .map_err(LeecherError::HandshakeFailed)?;
 
         println!("Handshake successful!");
         println!("  Peer ID: {}", hex::encode(handshake.peer_id.bytes()));
         println!("  Info Hash: {}", handshake.info_hash_hex());
+        println!("  Seeder Price: {}", handshake.price);
 
         // implement BEP 10
         if is_magnet {

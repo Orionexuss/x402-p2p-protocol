@@ -287,7 +287,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     std::process::exit(1);
                 });
 
-            let (seeder, torrent_manager) = x402_core::Seeder::new(addr, port).unwrap();
+            let (mut seeder, torrent_manager) = x402_core::Seeder::new(addr, port).unwrap();
 
             println!("Serving these info hashes:");
             for hash in &seeder.info_hashes {
@@ -297,8 +297,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Announce all torrents to tracker
             if !seeder.info_hashes.is_empty() {
                 println!("\nAnnouncing to tracker: {}", tracker);
-                for info_hash in &seeder.info_hashes {
-                    let price = *seeder_prices.get(info_hash).unwrap_or_else(|| {
+                let info_hashes = seeder.info_hashes.clone();
+                for info_hash in info_hashes {
+                    let price = *seeder_prices.get(&info_hash).unwrap_or_else(|| {
                         eprintln!(
                             "Missing price in {} for info hash {}",
                             SEEDER_CONFIG_PATH,
@@ -308,7 +309,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     });
 
                     match seeder
-                        .announce_to_tracker(tracker.clone(), price, *info_hash)
+                        .announce_to_tracker(tracker.clone(), price, info_hash)
                         .await
                     {
                         Ok(response) => {

@@ -39,6 +39,7 @@ pub struct PeerInfo {
     pub ip: String,
     pub port: u16,
     pub pubkey: String,
+    pub price: u64,
     pub stake: u64,
     pub reputation: i32,
     pub pieces: Vec<u8>,

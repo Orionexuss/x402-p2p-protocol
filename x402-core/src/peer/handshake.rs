@@ -4,7 +4,7 @@ use std::net::TcpStream;
 use svix_ksuid::{KsuidLike, KsuidMs};
 
 const PROTOCOL_STRING: &[u8] = b"BitTorrent protocol";
-const HANDSHAKE_LENGTH: usize = 68;
+const HANDSHAKE_LENGTH: usize = 76;
 
 /// Represents a BitTorrent handshake message
 #[derive(Debug, Clone, PartialEq)]
@@ -19,11 +19,13 @@ pub struct Handshake {
     pub info_hash: [u8; 20],
     /// 20-byte peer ID
     pub peer_id: KsuidMs,
+    /// Seeder price in minor units
+    pub price: u64,
 }
 
 impl Handshake {
     /// Create a new handshake message
-    pub fn new(info_hash: [u8; 20], peer_id: KsuidMs) -> Self {
+    pub fn new(info_hash: [u8; 20], peer_id: KsuidMs, price: u64) -> Self {
         let mut pstr = [0u8; 19];
         pstr.copy_from_slice(PROTOCOL_STRING);
 
@@ -33,13 +35,14 @@ impl Handshake {
             reserved: [0u8; 8],
             info_hash,
             peer_id,
+            price,
         };
         handshake.enable_extensions();
         handshake
     }
 
     /// Create a handshake from an info hash hex string
-    pub fn from_hex(info_hash_hex: &str, peer_id: KsuidMs) -> Result<Self, String> {
+    pub fn from_hex(info_hash_hex: &str, peer_id: KsuidMs, price: u64) -> Result<Self, String> {
         if info_hash_hex.len() != 40 {
             return Err(format!(
                 "Invalid info hash length: expected 40, got {}",
@@ -53,7 +56,7 @@ impl Handshake {
                 .map_err(|e| format!("Invalid hex in info hash: {}", e))?;
         }
 
-        Ok(Self::new(info_hash, peer_id))
+        Ok(Self::new(info_hash, peer_id, price))
     }
 
     pub fn enable_extensions(&mut self) {
@@ -72,6 +75,7 @@ impl Handshake {
         buf.extend_from_slice(&self.reserved);
         buf.extend_from_slice(&self.info_hash);
         buf.extend_from_slice(self.peer_id.bytes().as_ref());
+        buf.extend_from_slice(&self.price.to_be_bytes());
         buf
     }
 
@@ -108,12 +112,17 @@ impl Handshake {
 
         let peer_id = KsuidMs::from_bytes(peer_id_bytes);
 
+        let mut price_bytes = [0u8; 8];
+        price_bytes.copy_from_slice(&data[68..76]);
+        let price = u64::from_be_bytes(price_bytes);
+
         let handshake = Handshake {
             pstrlen,
             pstr,
             reserved,
             info_hash,
             peer_id,
+            price,
         };
 
         Ok(handshake)
@@ -141,8 +150,9 @@ impl Handshake {
         stream: &mut TcpStream,
         info_hash: [u8; 20],
         peer_id: KsuidMs,
+        price: u64,
     ) -> Result<Self, String> {
-        let mut handshake = Self::new(info_hash, peer_id);
+        let mut handshake = Self::new(info_hash, peer_id, price);
         handshake.enable_extensions();
         handshake
             .send(stream)
@@ -187,19 +197,20 @@ mod tests {
     fn test_handshake_new() {
         let info_hash = [1u8; 20];
         let peer_id = KsuidMs::new(None, None);
-        let handshake = Handshake::new(info_hash, peer_id);
+        let handshake = Handshake::new(info_hash, peer_id, 550);
 
         assert_eq!(handshake.pstrlen, 19);
         assert_eq!(&handshake.pstr, PROTOCOL_STRING);
         assert_eq!(handshake.info_hash, info_hash);
         assert_eq!(handshake.peer_id, peer_id);
+        assert_eq!(handshake.price, 550);
     }
 
     #[test]
     fn test_handshake_serialize_deserialize() {
         let info_hash = [1u8; 20];
         let peer_id = KsuidMs::new(None, None);
-        let handshake = Handshake::new(info_hash, peer_id);
+        let handshake = Handshake::new(info_hash, peer_id, 1000);
 
         let serialized = handshake.serialize();
         assert_eq!(serialized.len(), HANDSHAKE_LENGTH);
@@ -212,15 +223,16 @@ mod tests {
     fn test_handshake_from_hex() {
         let hex = "d2474e86c95b19b8bcfdb92bc12c9d44667cfa36";
         let peer_id = KsuidMs::new(None, None);
-        let handshake = Handshake::from_hex(hex, peer_id).unwrap();
+        let handshake = Handshake::from_hex(hex, peer_id, 4242).unwrap();
 
         assert_eq!(handshake.info_hash_hex(), hex);
+        assert_eq!(handshake.price, 4242);
     }
 
     #[test]
     fn test_handshake_invalid_hex() {
         let peer_id = KsuidMs::new(None, None);
-        let result = Handshake::from_hex("invalid", peer_id);
+        let result = Handshake::from_hex("invalid", peer_id, 0);
         assert!(result.is_err());
     }
 
