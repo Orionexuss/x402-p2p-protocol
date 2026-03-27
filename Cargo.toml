@@ -1,6 +1,7 @@
 [workspace]
 members = ["cli",
     "x402-core",
-    "tracker", "x402-contract",
+    "tracker",
+    "x402-contract/programs/*"
 ]
 resolver = "2"
