@@ -6,10 +6,15 @@ use std::{fs, io};
 use crate::decode_torrent;
 use crate::peer::auth_proof::AuthProof;
 use crate::peer::extension_protocol::{ExtendedHandshake, UT_METADATA_EXTENSION_ID};
+use crate::peer::leech::LeecherError;
 use crate::peer::protocol::{X402MessageId, read_message};
 use crate::peer::tracker_client::{AnnounceResponse, TrackerClient, TrackerClientError};
 use crate::peer::ut_metadata::{MetadataMessage, calculate_num_pieces};
 use crate::torrent::parser::calculate_info_hash;
+use dirs::home_dir;
+use solana_sdk::signature::Keypair;
+use solana_sdk::signer::EncodableKey;
+use solana_sdk::signer::Signer;
 use svix_ksuid::{KsuidLike, KsuidMs};
 
 use crate::peer::handshake::{Handshake, generate_peer_id};
@@ -97,10 +102,23 @@ impl Seeder {
         price: u64,
         info_hash: [u8; 20],
     ) -> Result<AnnounceResponse, TrackerClientError> {
+        let keypair_path = home_dir()
+            .ok_or_else(|| {
+                LeecherError::IoError(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "Home directory not found",
+                ))
+            }).unwrap()
+            .join(".config")
+            .join("solana")
+            .join("id.json");
+
+        let keypair = Keypair::read_from_file(&keypair_path).unwrap();
+
         let tracker_client = TrackerClient::new(tracker_url);
         let peer_id = self.peer_id.bytes();
         let port = self.port;
-        let pubkey = [0u8; 32]; // TODO: Use real wallet pubkey
+        let pubkey = keypair.pubkey().to_bytes();
         let left = 0u64; // Seeder has all pieces
         let event = Some("completed");
 
@@ -360,7 +378,6 @@ impl Seeder {
             }
         }
     }
-
 }
 
 #[cfg(test)]

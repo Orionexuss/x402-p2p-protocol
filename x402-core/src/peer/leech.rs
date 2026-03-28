@@ -5,10 +5,8 @@ use crate::peer::protocol::X402MessageId;
 use crate::peer::tracker_client::{PeerInfo, TrackerClient};
 use crate::peer::ut_metadata::{calculate_num_pieces, MetadataMessage, METADATA_PIECE_SIZE};
 use crate::read_message;
-use dirs::home_dir;
 use sha1::Digest;
 use solana_sdk::signature::Keypair;
-use solana_sdk::signer::EncodableKey;
 use std::collections::HashSet;
 use std::io;
 use std::net::{SocketAddr, TcpStream};
@@ -57,11 +55,11 @@ impl Leecher {
     pub fn new(
         info_hash: [u8; 20],
         tracker_url: String,
+        pubkey: [u8; 32],
         output_path: PathBuf,
         total_size: u64,
     ) -> Self {
         let peer_id = generate_peer_id();
-        let pubkey = [0u8; 32]; // TODO: Use real wallet pubkey
 
         Self {
             peer_id,
@@ -74,7 +72,7 @@ impl Leecher {
     }
 
     /// Start the download process
-    pub async fn download(&self, is_magnet: bool) -> Result<(), LeecherError> {
+    pub async fn download(&self, is_magnet: bool, keypair: &Keypair) -> Result<(), LeecherError> {
         println!(
             "Starting download for info_hash: {}",
             hex::encode(self.info_hash)
@@ -127,7 +125,7 @@ impl Leecher {
 
         // 3. Try to connect to peers
         for peer_info in &peers {
-            match self.connect_to_peer(peer_info, is_magnet).await {
+            match self.connect_to_peer(peer_info, is_magnet, keypair).await {
                 Ok(_) => {
                     println!(
                         "Successfully connected to peer {}:{}",
@@ -169,6 +167,7 @@ impl Leecher {
         &self,
         peer_info: &PeerInfo,
         is_magnet: bool,
+        keypair: &Keypair,
     ) -> Result<(), LeecherError> {
         println!(
             "\nConnecting to peer {}:{}...",
@@ -334,21 +333,7 @@ impl Leecher {
             }
         }
 
-        // path ~/.config/solana/id.json
-        let keypair_path = home_dir()
-            .ok_or_else(|| {
-                LeecherError::IoError(io::Error::new(
-                    io::ErrorKind::NotFound,
-                    "Home directory not found",
-                ))
-            })?
-            .join(".config")
-            .join("solana")
-            .join("id.json");
-
-        let keypair = Keypair::read_from_file(&keypair_path).unwrap();
-
-        let auth_proof = AuthProof::create(&keypair, AuthProof::generate_nonce());
+        let auth_proof = AuthProof::create(keypair, AuthProof::generate_nonce());
         auth_proof.send(&mut stream)?;
         println!("Sent authentication proof to peer.");
 

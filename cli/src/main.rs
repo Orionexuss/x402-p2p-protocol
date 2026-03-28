@@ -1,8 +1,12 @@
 use clap::{Parser, Subcommand};
 use serde::Deserialize;
+use solana_sdk::signature::Keypair;
+use solana_sdk::signer::{EncodableKey, Signer};
 use std::collections::HashMap;
-use std::fs;
+use std::env::home_dir;
 use std::path::Path;
+use std::{fs, io};
+use x402_core::peer::leech::LeecherError;
 use x402_core::torrent::parser::calculate_info_hash;
 
 const SEEDER_CONFIG_PATH: &str = "seeder.json";
@@ -415,15 +419,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 tracker = tracker.trim_end_matches("/announce").to_string();
             }
 
+            // path ~/.config/solana/id.json
+            let keypair_path = home_dir()
+                .ok_or_else(|| {
+                    LeecherError::IoError(io::Error::new(
+                        io::ErrorKind::NotFound,
+                        "Home directory not found",
+                    ))
+                })?
+                .join(".config")
+                .join("solana")
+                .join("id.json");
+
+            let keypair = Keypair::read_from_file(&keypair_path).unwrap();
+            let pubkey = keypair.pubkey();
+
             // Create leecher and start download
             let leecher = x402_core::Leecher::new(
                 info_hash,
                 tracker,
+                pubkey.to_bytes(),
                 std::path::PathBuf::from(output_path),
                 total_size,
             );
 
-            if let Err(e) = leecher.download(is_magnet).await {
+            if let Err(e) = leecher.download(is_magnet, &keypair).await {
                 eprintln!("Download failed: {}", e);
                 std::process::exit(1);
             }
