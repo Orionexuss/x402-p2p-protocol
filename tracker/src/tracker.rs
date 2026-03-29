@@ -49,8 +49,9 @@ impl X402Tracker {
         let peer_id: PeerId = peer_id.try_into().unwrap();
 
         // Parse pubkey
-        let pubkey =
-            hex::decode(&req.pubkey).map_err(|e| TrackerError::HexDecode(e.to_string()))?;
+        let pubkey = bs58::decode(&req.pubkey)
+            .into_vec()
+            .map_err(|e| TrackerError::Base58Decode(e.to_string()))?;
         if pubkey.len() != 32 {
             return Err(TrackerError::InvalidPubkey(
                 "Public key must be 32 bytes".to_string(),
@@ -63,8 +64,8 @@ impl X402Tracker {
 
         info!(
             "Announce from peer {} for info_hash {} (event: {:?})",
-            hex::encode(&peer_id),
-            hex::encode(&info_hash),
+            hex::encode(peer_id),
+            hex::encode(info_hash),
             req.event
         );
 
@@ -134,7 +135,7 @@ impl X402Tracker {
 
         info!(
             "Swarm {} now has {} seeders and {} leechers",
-            hex::encode(&info_hash),
+            hex::encode(info_hash),
             complete,
             incomplete
         );
@@ -194,7 +195,7 @@ impl X402Tracker {
 
         warn!(
             "Report received for peer {} (reason: {:?})",
-            hex::encode(&reported),
+            hex::encode(reported),
             req.reason
         );
 
@@ -205,7 +206,7 @@ impl X402Tracker {
 
         info!(
             "Peer {} reputation now: {}",
-            hex::encode(&reported),
+            hex::encode(reported),
             *current
         );
 
@@ -277,10 +278,10 @@ impl X402Tracker {
             .values()
             .filter(|p| p.reputation >= self.policy.min_reputation)
             .map(|p| PeerInfo {
-                peer_id: hex::encode(&p.peer_id),
+                peer_id: hex::encode(p.peer_id),
                 ip: p.ip.to_string(),
                 port: p.port,
-                pubkey: hex::encode(&p.pubkey),
+                pubkey: bs58::encode(&p.pubkey).into_string(),
                 price: p.price,
                 stake: p.stake,
                 reputation: p.reputation,

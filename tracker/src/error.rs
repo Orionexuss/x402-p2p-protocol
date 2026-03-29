@@ -27,6 +27,9 @@ pub enum TrackerError {
     #[error("Hex decode error: {0}")]
     HexDecode(String),
 
+    #[error("Base58 decode error: {0}")]
+    Base58Decode(String),
+
     #[error("Internal error: {0}")]
     Internal(String),
 }
@@ -37,6 +40,7 @@ impl IntoResponse for TrackerError {
             TrackerError::InvalidInfoHash(_)
             | TrackerError::InvalidPeerId(_)
             | TrackerError::InvalidPubkey(_)
+            | TrackerError::Base58Decode(_)
             | TrackerError::HexDecode(_) => (StatusCode::BAD_REQUEST, self.to_string()),
 
             TrackerError::InvalidSignature => (StatusCode::UNAUTHORIZED, self.to_string()),
@@ -45,9 +49,7 @@ impl IntoResponse for TrackerError {
                 (StatusCode::FORBIDDEN, self.to_string())
             }
 
-            TrackerError::Internal(_) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, self.to_string())
-            }
+            TrackerError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
         };
 
         let body = Json(json!({
