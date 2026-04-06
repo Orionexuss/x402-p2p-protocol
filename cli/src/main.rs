@@ -1,7 +1,7 @@
+use anchor_client::solana_sdk::signature::read_keypair_file;
+use anchor_client::solana_sdk::signer::Signer;
 use clap::{Parser, Subcommand};
 use serde::Deserialize;
-use solana_sdk::signature::Keypair;
-use solana_sdk::signer::{EncodableKey, Signer};
 use std::collections::HashMap;
 use std::env::home_dir;
 use std::path::Path;
@@ -42,7 +42,7 @@ fn load_seeder_prices(config_path: &Path) -> Result<HashMap<[u8; 20], u64>, Stri
             )
         })?;
 
-        let price = parse_price_to_minor_units(price_str)?;
+        let price = parse_price_to_usdc_minor_units(price_str)?;
 
         if prices_by_info_hash.insert(info_hash, price).is_some() {
             return Err(format!(
@@ -71,40 +71,23 @@ fn parse_info_hash(info_hash_hex: &str) -> Result<[u8; 20], String> {
     Ok(info_hash)
 }
 
-fn parse_price_to_minor_units(price: &str) -> Result<u64, String> {
-    let (whole, fractional) = price
-        .split_once('.')
-        .ok_or_else(|| format!("Invalid price {}: expected format X.YY", price))?;
-
-    if whole.is_empty() || !whole.chars().all(|c| c.is_ascii_digit()) {
-        return Err(format!(
-            "Invalid price {}: whole part must be digits",
-            price
-        ));
-    }
-
-    if fractional.len() != 2 || !fractional.chars().all(|c| c.is_ascii_digit()) {
-        return Err(format!(
-            "Invalid price {}: fractional part must contain exactly two digits",
-            price
-        ));
-    }
-
-    let whole = whole
-        .parse::<u64>()
+fn parse_price_to_usdc_minor_units(price: &str) -> Result<u64, String> {
+    let float_val: f64 = price
+        .parse()
         .map_err(|e| format!("Invalid price {}: {}", price, e))?;
-    let fractional = fractional
-        .parse::<u64>()
-        .map_err(|e| format!("Invalid price {}: {}", price, e))?;
-
-    whole
-        .checked_mul(100)
-        .and_then(|value| value.checked_add(fractional))
-        .ok_or_else(|| format!("Invalid price {}: value is too large", price))
+    if float_val < 0.0 {
+        return Err(format!("Price cannot be negative: {}", price));
+    }
+    let micro_units = (float_val * 1_000_000.0).round();
+    if micro_units > u64::MAX as f64 {
+        return Err(format!("Price too large: {}", price));
+    }
+    Ok(micro_units as u64)
 }
 
-fn format_minor_units(price: u64) -> String {
-    format!("{}.{:02}", price / 100, price % 100)
+fn format_price_from_minor_units(minor_units: u64) -> String {
+    let float_val = minor_units as f64 / 1_000_000.0;
+    format!("{:.2}", float_val)
 }
 
 #[derive(Parser)]
@@ -320,7 +303,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             println!(
                                 "  Announced {} at price {} - {} seeders, {} leechers",
                                 hex::encode(info_hash),
-                                format_minor_units(price),
+                                format_price_from_minor_units(price),
                                 response.seeders.len(),
                                 response.leechers.len()
                             );
@@ -346,6 +329,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!();
             let mut tracker;
             let is_magnet: bool;
+            let pieces_length: Option<u32>;
 
             // Parse source (magnet or .torrent file)
             let (info_hash, file_name, total_size) = if source.starts_with("magnet:?") {
@@ -354,6 +338,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 match x402_core::MagnetLink::parse(&source) {
                     Ok(magnet) => {
+                        pieces_length = None;
                         println!("Parsed magnet link:");
                         println!("  Info Hash: {}", magnet.info_hash);
                         if let Some(name) = &magnet.display_name {
@@ -397,6 +382,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let torrent_length = torrent.total_length();
                             let info_hash = calculate_info_hash(&torrent);
 
+                            pieces_length = Some(torrent.num_pieces() as u32);
                             (info_hash, torrent.info.name, torrent_length)
                         }
                         Err(e) => {
@@ -431,7 +417,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .join("solana")
                 .join("id.json");
 
-            let keypair = Keypair::read_from_file(&keypair_path).unwrap();
+            let keypair = read_keypair_file(keypair_path).unwrap();
             let pubkey = keypair.pubkey();
 
             // Create leecher and start download
@@ -443,7 +429,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 total_size,
             );
 
-            if let Err(e) = leecher.download(is_magnet, &keypair).await {
+            if let Err(e) = leecher.download(is_magnet, &keypair, pieces_length).await {
                 eprintln!("Download failed: {}", e);
                 std::process::exit(1);
             }
