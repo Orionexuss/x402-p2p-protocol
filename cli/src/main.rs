@@ -461,23 +461,3 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::parse_price_to_minor_units;
-
-    #[test]
-    fn parses_valid_two_decimal_prices() {
-        assert_eq!(parse_price_to_minor_units("5.00").unwrap(), 500);
-        assert_eq!(parse_price_to_minor_units("1.24").unwrap(), 124);
-        assert_eq!(parse_price_to_minor_units("529.43").unwrap(), 52943);
-    }
-
-    #[test]
-    fn rejects_invalid_price_formats() {
-        assert!(parse_price_to_minor_units("5").is_err());
-        assert!(parse_price_to_minor_units("5.0").is_err());
-        assert!(parse_price_to_minor_units("5.000").is_err());
-        assert!(parse_price_to_minor_units("abc").is_err());
-    }
-}

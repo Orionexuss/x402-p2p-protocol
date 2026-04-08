@@ -1,6 +1,6 @@
 use std::net::TcpStream;
 
-use solana_sdk::{
+use anchor_client::solana_sdk::{
     pubkey::Pubkey,
     signature::{Keypair, Signature},
     signer::Signer,

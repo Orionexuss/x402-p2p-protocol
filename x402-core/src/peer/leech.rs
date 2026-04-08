@@ -1,19 +1,27 @@
 use crate::peer::auth_proof::AuthProof;
 use crate::peer::extension_protocol::ExtendedHandshake;
 use crate::peer::handshake::{generate_peer_id, Handshake};
+use crate::peer::locked_payment::LockedPayment;
 use crate::peer::protocol::X402MessageId;
 use crate::peer::tracker_client::{PeerInfo, TrackerClient};
 use crate::peer::ut_metadata::{calculate_num_pieces, MetadataMessage, METADATA_PIECE_SIZE};
+use crate::peer::utils::merkletree::{hash, MerkleTree};
 use crate::read_message;
+use crate::torrent::types::Info;
+use anchor_client::solana_sdk::signature::Keypair;
+use anchor_client::{Client, Cluster};
+use anchor_lang::prelude::{declare_program, Pubkey};
 use sha1::Digest;
-use solana_sdk::signature::Keypair;
 use std::collections::HashSet;
 use std::io;
 use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::time::Duration;
 use svix_ksuid::{KsuidLike, KsuidMs};
 use thiserror::Error;
+
+declare_program!(x402_contract);
 
 #[derive(Error, Debug)]
 pub enum LeecherError {
@@ -40,6 +48,9 @@ pub enum LeecherError {
 
     #[error("Metadata protocol error: {0}")]
     MetadataError(String),
+
+    #[error("Payment protocol error: {0}")]
+    PaymentError(String),
 }
 
 pub struct Leecher {
@@ -72,7 +83,12 @@ impl Leecher {
     }
 
     /// Start the download process
-    pub async fn download(&self, is_magnet: bool, keypair: &Keypair) -> Result<(), LeecherError> {
+    pub async fn download(
+        &self,
+        is_magnet: bool,
+        keypair: &Keypair,
+        pieces_length: Option<u32>,
+    ) -> Result<(), LeecherError> {
         println!(
             "Starting download for info_hash: {}",
             hex::encode(self.info_hash)
@@ -103,7 +119,7 @@ impl Leecher {
             response.complete, response.incomplete
         );
         println!("Min stake: {} lamports", response.min_stake);
-        println!("Piece price: {} lamports", response.piece_price);
+        println!("Piece price: {} USDC", response.piece_price);
         println!();
 
         // 2. Get all available peers (seeders first)
@@ -125,7 +141,10 @@ impl Leecher {
 
         // 3. Try to connect to peers
         for peer_info in &peers {
-            match self.connect_to_peer(peer_info, is_magnet, keypair).await {
+            match self
+                .connect_to_peer(peer_info, is_magnet, keypair, pieces_length)
+                .await
+            {
                 Ok(_) => {
                     println!(
                         "Successfully connected to peer {}:{}",
@@ -168,6 +187,7 @@ impl Leecher {
         peer_info: &PeerInfo,
         is_magnet: bool,
         keypair: &Keypair,
+        mut pieces_length: Option<u32>,
     ) -> Result<(), LeecherError> {
         println!(
             "\nConnecting to peer {}:{}...",
@@ -312,6 +332,9 @@ impl Leecher {
                 metadata.extend_from_slice(&piece);
             }
 
+            let metadata_deserialized: Info = serde_bencode::from_bytes(&metadata).unwrap();
+            pieces_length = Some(metadata_deserialized.pieces.len() as u32 / 20);
+
             if metadata.len() != metadata_size as usize {
                 return Err(LeecherError::MetadataError(format!(
                     "Reconstructed metadata size mismatch: got {}, expected {}",
@@ -345,6 +368,54 @@ impl Leecher {
             println!("Peer authentication failed!");
             return Err(LeecherError::AuthError());
         }
+
+        // Implement merkle tree
+        let mut secrets = vec![];
+        for _ in 0..pieces_length.unwrap() {
+            let s: [u8; 32] = rand::random();
+            secrets.push(s);
+        }
+        let leaves: Vec<[u8; 32]> = secrets.iter().map(|s| hash(s)).collect();
+        let tree = MerkleTree::new(leaves);
+        let merkle_root = tree.root();
+
+        let amount = handshake.price;
+
+        if amount == 0 {
+            return Err(LeecherError::PaymentError(
+                "Seeder reported zero price; refusing to lock zero-value payment".to_string(),
+            ));
+        }
+
+        let seeder_pubkey = Pubkey::from_str(&peer_info.pubkey)
+            .map_err(|e| LeecherError::PaymentError(format!("Invalid seeder pubkey: {}", e)))?;
+
+        let leecher_pubkey = Pubkey::new_from_array(self.pubkey);
+        let info_hash = self.info_hash;
+        let keypair_bytes = keypair.to_bytes();
+
+        let leecher_keypair = Keypair::try_from(&keypair_bytes[..])
+            .map_err(|e| format!("Invalid keypair bytes: {}", e))
+            .unwrap();
+
+        let onchain_session_result =
+            tokio::task::spawn_blocking(move || {
+                // Keep client/program alive for the full on-chain session in this worker.
+                let anchor_client = Client::new(Cluster::Devnet, &leecher_keypair);
+                let program = anchor_client
+                    .program(x402_contract::ID)
+                    .map_err(|e| format!("Failed to create Anchor program client: {}", e))?;
+
+                LockedPayment::new(leecher_pubkey, seeder_pubkey, &info_hash, merkle_root)
+                    .lock_payment(&mut stream, amount, &program)
+            })
+            .await
+            .map_err(|e| LeecherError::PaymentError(format!("Payment worker join error: {}", e)))?;
+
+        onchain_session_result
+            .map_err(|e| LeecherError::PaymentError(format!("Failed to lock payment: {}", e)))?;
+
+        println!("LockedPayment successfully");
 
         Ok(())
     }
