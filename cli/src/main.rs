@@ -1,4 +1,5 @@
-use anchor_client::solana_sdk::signature::read_keypair_file;
+use anchor_client::solana_sdk::signature::{read_keypair_file, Keypair};
+use anchor_client::solana_sdk::signer::EncodableKey;
 use anchor_client::solana_sdk::signer::Signer;
 use clap::{Parser, Subcommand};
 use serde::Deserialize;
@@ -281,6 +282,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("  {}", hex::encode(hash));
             }
 
+            let keypair_path = home_dir()
+                .ok_or_else(|| {
+                    LeecherError::IoError(io::Error::new(
+                        io::ErrorKind::NotFound,
+                        "Home directory not found",
+                    ))
+                })
+                .unwrap()
+                .join(".config")
+                .join("solana")
+                .join("id.json");
+
+            let keypair = Keypair::read_from_file(&keypair_path).unwrap();
             // Announce all torrents to tracker
             if !seeder.info_hashes.is_empty() {
                 println!("\nAnnouncing to tracker: {}", tracker);
@@ -296,7 +310,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     });
 
                     match seeder
-                        .announce_to_tracker(tracker.clone(), price, info_hash)
+                        .announce_to_tracker(tracker.clone(), price, info_hash, &keypair.pubkey())
                         .await
                     {
                         Ok(response) => {
@@ -318,7 +332,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             println!("\nStarting listener...");
-            if let Err(e) = seeder.listen(&torrent_manager) {
+            if let Err(e) = seeder.listen(&torrent_manager, &keypair.pubkey()) {
                 eprintln!("Error starting seeder: {}", e);
                 std::process::exit(1);
             }

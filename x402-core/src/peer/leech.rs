@@ -216,7 +216,9 @@ impl Leecher {
 
         // implement BEP 10
         if is_magnet {
-            ExtendedHandshake::new().send_extended_handshake(&mut stream);
+            ExtendedHandshake::new()
+                .send_extended_handshake(&mut stream)
+                .map_err(|e| LeecherError::MetadataError(e.to_string()))?;
             const MAX_METADATA_SIZE: u32 = 4 * 1024 * 1024; // 4 MB
 
             // Wait for extended handshake response

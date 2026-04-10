@@ -11,10 +11,11 @@ use crate::peer::protocol::{X402MessageId, read_message};
 use crate::peer::tracker_client::{AnnounceResponse, TrackerClient, TrackerClientError};
 use crate::peer::ut_metadata::{MetadataMessage, calculate_num_pieces};
 use crate::torrent::parser::calculate_info_hash;
+use anchor_client::solana_sdk::signature::Keypair;
+use anchor_client::solana_sdk::signer::EncodableKey;
+use anchor_client::solana_sdk::signer::Signer;
+use anchor_lang::prelude::Pubkey;
 use dirs::home_dir;
-use solana_sdk::signature::Keypair;
-use solana_sdk::signer::EncodableKey;
-use solana_sdk::signer::Signer;
 use svix_ksuid::{KsuidLike, KsuidMs};
 
 use crate::peer::handshake::{Handshake, generate_peer_id};
@@ -101,24 +102,14 @@ impl Seeder {
         tracker_url: String,
         price: u64,
         info_hash: [u8; 20],
+        seeder_pubkey: &Pubkey,
     ) -> Result<AnnounceResponse, TrackerClientError> {
-        let keypair_path = home_dir()
-            .ok_or_else(|| {
-                LeecherError::IoError(io::Error::new(
-                    io::ErrorKind::NotFound,
-                    "Home directory not found",
-                ))
-            }).unwrap()
-            .join(".config")
-            .join("solana")
-            .join("id.json");
 
-        let keypair = Keypair::read_from_file(&keypair_path).unwrap();
 
         let tracker_client = TrackerClient::new(tracker_url);
         let peer_id = self.peer_id.bytes();
         let port = self.port;
-        let pubkey = keypair.pubkey().to_bytes();
+        let pubkey = seeder_pubkey.to_bytes();
         let left = 0u64; // Seeder has all pieces
         let event = Some("completed");
 
@@ -132,7 +123,7 @@ impl Seeder {
     }
 
     /// Start listening for incoming connections
-    pub fn listen(&self, torrent_manager: &TorrentManager) -> io::Result<()> {
+    pub fn listen(&self, torrent_manager: &TorrentManager, seeder_pubkey: &Pubkey) -> io::Result<()> {
         let addr = format!("{}:{}", self.address, self.port);
         let listener = TcpListener::bind(&addr)?;
         println!("Seeder listening on {}", addr);
@@ -143,8 +134,8 @@ impl Seeder {
                 Ok(stream) => {
                     println!();
                     println!("New connection from: {}", stream.peer_addr()?);
-                    if let Err(e) = self.handle_connection(stream, torrent_manager) {
-                        eprintln!("Error handling connection: {}", e);
+                    if let Err(e) = self.handle_connection(stream, torrent_manager, seeder_pubkey) {
+                        eprintln!("Connection handler internal error: {}", e);
                     }
                 }
                 Err(e) => {
@@ -161,11 +152,18 @@ impl Seeder {
         &self,
         mut stream: TcpStream,
         torrent_manager: &TorrentManager,
+        seeder_pubkey: &Pubkey,
     ) -> Result<(), String> {
         println!("Waiting for handshake...");
 
         // Receive the handshake from the leecher
-        let handshake = Handshake::receive(&mut stream)?;
+        let handshake = match Handshake::receive(&mut stream) {
+            Ok(handshake) => handshake,
+            Err(_) => {
+                println!("Closing peer connection after invalid handshake");
+                return Ok(());
+            }
+        };
 
         println!("Received handshake:");
         println!("  Info Hash: {}", handshake.info_hash_hex());
@@ -173,10 +171,8 @@ impl Seeder {
 
         // Check if we have this torrent
         if torrent_manager.get_torrent(&handshake.info_hash).is_none() {
-            return Err(format!(
-                "We do not have the torrent for info hash: {}",
-                handshake.info_hash_hex()
-            ));
+            println!("Closing peer connection: torrent not available on this seeder");
+            return Ok(());
         }
 
         println!("Info hash matches! Sending handshake response...");
@@ -189,9 +185,10 @@ impl Seeder {
 
         // Send our handshake response
         let response = Handshake::new(handshake.info_hash, self.peer_id, seeder_price);
-        response
-            .send(&mut stream)
-            .map_err(|e| format!("Failed to send handshake: {}", e))?;
+        if response.send(&mut stream).is_err() {
+            println!("Closing peer connection after handshake send failure");
+            return Ok(());
+        }
 
         println!("Handshake successful!");
 
@@ -217,8 +214,13 @@ impl Seeder {
         let mut sent_extended_handshake = false;
         // Route incoming protocol messages by ID so order is not assumed.
         loop {
-            let message = read_message(&mut stream)
-                .map_err(|e| format!("Failed to read protocol message: {}", e))?;
+            let message = match read_message(&mut stream) {
+                Ok(message) => message,
+                Err(_) => {
+                    println!("Closing peer connection after protocol read error");
+                    break;
+                }
+            };
 
             match message.id {
                 // Extension channel (BEP 10 style metadata and custom messages)
@@ -227,10 +229,17 @@ impl Seeder {
                         Some(0) => {
                             println!("Received extended handshake");
 
-                            let peer_handshake = ExtendedHandshake::receive_extended_handshake(
+                            let peer_handshake = match ExtendedHandshake::receive_extended_handshake(
                                 &message,
-                            )
-                            .map_err(|e| format!("Failed to process extended handshake: {}", e))?;
+                            ) {
+                                Ok(peer_handshake) => peer_handshake,
+                                Err(_) => {
+                                    println!(
+                                        "Closing peer connection after malformed extended handshake"
+                                    );
+                                    break;
+                                }
+                            };
 
                             // Save if the peer supports ut_metadata
                             peer_ut_metadata_id = peer_handshake.m.get("ut_metadata").copied();
@@ -246,7 +255,12 @@ impl Seeder {
                                 let mut my_handshake = ExtendedHandshake::new();
                                 my_handshake.metadata_size = Some(metadata_size as u64);
 
-                                my_handshake.send_extended_handshake(&mut stream);
+                                if my_handshake.send_extended_handshake(&mut stream).is_err() {
+                                    println!(
+                                        "Closing peer connection after extended handshake send failure"
+                                    );
+                                    break;
+                                }
                                 println!(
                                     "Sent extended handshake with metadata size {:?}",
                                     my_handshake
@@ -260,49 +274,39 @@ impl Seeder {
                             if ext_id == UT_METADATA_EXTENSION_ID {
                                 println!("Received ut_metadata message with id {}", ext_id);
                                 let requested_piece =
-                                    MetadataMessage::receive_ut_metadata_request(&message)
-                                        .ok_or_else(|| {
-                                            "Invalid ut_metadata request payload from peer"
-                                                .to_string()
-                                        })?;
+                                    match MetadataMessage::receive_ut_metadata_request(&message) {
+                                        Some(requested_piece) => requested_piece,
+                                        None => {
+                                            println!(
+                                                "Closing peer connection after invalid ut_metadata request"
+                                            );
+                                            break;
+                                        }
+                                    };
 
-                                let response_ext_id = peer_ut_metadata_id.ok_or_else(|| {
-                                    "Peer did not advertise ut_metadata id; cannot send metadata response"
-                                        .to_string()
-                                })?;
+                                let response_ext_id = match peer_ut_metadata_id {
+                                    Some(id) => id,
+                                    None => {
+                                        println!(
+                                            "Closing peer connection: ut_metadata was not negotiated"
+                                        );
+                                        break;
+                                    }
+                                };
 
                                 if requested_piece >= metadata_piece_count {
                                     println!(
-                                        "Rejecting out-of-range metadata piece {} (max {})",
-                                        requested_piece,
-                                        metadata_piece_count.saturating_sub(1)
+                                        "Closing peer connection after out-of-range metadata request"
                                     );
-                                    MetadataMessage::send_ut_metadata_reject(
-                                        &mut stream,
-                                        response_ext_id,
-                                        requested_piece,
-                                    )
-                                    .map_err(|e| {
-                                        format!("Failed to send ut_metadata reject: {}", e)
-                                    })?;
-                                    continue;
+                                    break;
                                 }
 
                                 if metadata_request_queue.len() >= Self::MAX_METADATA_REQUEST_QUEUE
                                 {
                                     println!(
-                                        "Queue full ({}). Rejecting piece {}",
-                                        Self::MAX_METADATA_REQUEST_QUEUE,
-                                        requested_piece
+                                        "Closing peer connection after metadata queue overflow"
                                     );
-                                    MetadataMessage::send_ut_metadata_reject(
-                                        &mut stream,
-                                        response_ext_id,
-                                        requested_piece,
-                                    )
-                                    .map_err(|e| {
-                                        format!("Failed to send queue overflow reject: {}", e)
-                                    })?;
+                                    break;
                                 } else {
                                     metadata_request_queue.push_back(requested_piece);
                                     println!(
@@ -312,7 +316,7 @@ impl Seeder {
                                     );
                                 }
 
-                                MetadataMessage::flush_metadata_queue(
+                                if MetadataMessage::flush_metadata_queue(
                                     &mut stream,
                                     response_ext_id,
                                     &metadata,
@@ -320,35 +324,51 @@ impl Seeder {
                                     &mut pop_from_back,
                                     Self::MAX_METADATA_RESPONSES_PER_TICK,
                                 )
-                                .map_err(|e| format!("Failed to flush metadata queue: {}", e))?;
+                                .is_err()
+                                {
+                                    println!(
+                                        "Closing peer connection after metadata response error"
+                                    );
+                                    break;
+                                }
                             } else {
-                                println!("Received unknown extended message id {}", ext_id);
+                                println!("Closing peer connection after unknown extended message");
+                                break;
                             }
                         }
 
                         // ----- MALFORMED MESSAGE -----
                         None => {
-                            println!("Invalid extended message (missing extended id)");
+                            println!("Closing peer connection after malformed extended message");
+                            break;
                         }
                     }
                 }
                 X402MessageId::AuthProof => {
-                    let auth_proof = AuthProof::receive(&message)?;
+                    let auth_proof = match AuthProof::receive(&message) {
+                        Ok(auth_proof) => auth_proof,
+                        Err(_) => {
+                            println!("Closing peer connection after invalid AuthProof");
+                            break;
+                        }
+                    };
 
                     if auth_proof.verify() {
                         println!("Peer authenticated successfully!");
-                        auth_proof
-                            .send_auth_ok(&mut stream)
-                            .map_err(|e| format!("Failed to send AuthOk: {}", e))?;
+                        if auth_proof.send_auth_ok(&mut stream).is_err() {
+                            println!("Closing peer connection after AuthOk send failure");
+                            break;
+                        }
                         // Keep connection alive for the rest of the protocol flow.
-                        return Ok(());
+                        continue;
                     }
 
-                    return Err("Peer authentication failed".to_string());
+                    println!("Closing peer connection after failed authentication");
+                    break;
                 }
 
                 X402MessageId::LockedPayment => {
-                    println!("Received LockedPayment (TODO: verify lock/amount)");
+                    println!("Received LockedPayment (TODO: verify on-chain and conditionally ack)")
                 }
 
                 X402MessageId::RequestBlock => {
@@ -377,6 +397,8 @@ impl Seeder {
                 }
             }
         }
+
+        Ok(())
     }
 }
 

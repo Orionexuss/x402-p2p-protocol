@@ -33,19 +33,19 @@ impl ExtendedHandshake {
         }
     }
 
-    pub fn to_bencode(&self) -> Vec<u8> {
-        serde_bencode::ser::to_bytes(&self).expect("Failed to serialize extended handshake")
+    pub fn to_bencode(&self) -> Result<Vec<u8>, ProtocolError> {
+        serde_bencode::ser::to_bytes(&self).map_err(|_| ProtocolError::InvalidExtendedMessage)
     }
     pub fn from_bencode(data: &[u8]) -> Result<Self, ProtocolError> {
         serde_bencode::de::from_bytes(data).map_err(|_| ProtocolError::InvalidExtendedMessage)
     }
 
-    pub fn send_extended_handshake(&self, stream: &mut TcpStream) {
-        let payload = self.to_bencode();
+    pub fn send_extended_handshake(&self, stream: &mut TcpStream) -> Result<(), ProtocolError> {
+        let payload = self.to_bencode()?;
 
         let message = X402Message::new_extended(0, payload);
 
-        write_message(stream, &message).expect("Failed to send extended handshake");
+        write_message(stream, &message)
     }
 
     pub fn receive_extended_handshake(
@@ -72,7 +72,7 @@ mod tests {
     #[test]
     fn tests_to_bencode() {
         let handshake = ExtendedHandshake::new();
-        let bytes = handshake.to_bencode();
+        let bytes = handshake.to_bencode().unwrap();
 
         // The expected bencoded form is: d1:md11:ut_metadatai1eee
         let expected = b"d1:md11:ut_metadatai1eee".to_vec();

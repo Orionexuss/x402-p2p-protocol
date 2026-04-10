@@ -9,10 +9,10 @@ pub enum X402MessageId {
     AuthProof = 0,
     AuthOk = 1,
     LockedPayment = 2,
-    RequestBlock = 3,
-    PieceChunk = 4,
-    PaymentReveal = 5,
-    PaymentAck = 6,
+    PaymentAck = 3,
+    RequestBlock = 4,
+    PieceChunk = 5,
+    PaymentReveal = 6,
     Have = 7,
     Extended = 20,
 }
@@ -24,10 +24,10 @@ impl X402MessageId {
             0 => Ok(X402MessageId::AuthProof),
             1 => Ok(X402MessageId::AuthOk),
             2 => Ok(X402MessageId::LockedPayment),
-            3 => Ok(X402MessageId::RequestBlock),
-            4 => Ok(X402MessageId::PieceChunk),
-            5 => Ok(X402MessageId::PaymentReveal),
-            6 => Ok(X402MessageId::PaymentAck),
+            3 => Ok(X402MessageId::PaymentAck),
+            4 => Ok(X402MessageId::RequestBlock),
+            5 => Ok(X402MessageId::PieceChunk),
+            6 => Ok(X402MessageId::PaymentReveal),
             7 => Ok(X402MessageId::Have),
             20 => Ok(X402MessageId::Extended),
             _ => Err(ProtocolError::InvalidMessageId(value)),
@@ -117,6 +117,15 @@ pub fn read_message(stream: &mut TcpStream) -> Result<X402Message, ProtocolError
     stream.read_exact(&mut id_buf)?;
     let id = X402MessageId::from_u8(id_buf[0])?;
 
+    // Validate minimum frame length based on message kind.
+    if id == X402MessageId::Extended {
+        if length < 2 {
+            return Err(ProtocolError::InvalidExtendedMessage);
+        }
+    } else if length < 1 {
+        return Err(ProtocolError::ConnectionClosed);
+    }
+
     let mut extended_message_id = None;
 
     if id == X402MessageId::Extended {
@@ -192,10 +201,10 @@ mod tests {
         assert_eq!(X402MessageId::from_u8(0).unwrap(), X402MessageId::AuthProof);
         assert_eq!(X402MessageId::from_u8(1).unwrap(), X402MessageId::AuthOk);
         assert_eq!(
-            X402MessageId::from_u8(8).unwrap(),
+            X402MessageId::from_u8(3).unwrap(),
             X402MessageId::PaymentAck
         );
-        assert!(X402MessageId::from_u8(10).is_err());
+        assert!(X402MessageId::from_u8(8).is_err());
     }
 
     #[test]
@@ -206,7 +215,7 @@ mod tests {
 
     #[test]
     fn test_message_id_round_trip() {
-        for i in 0..=8 {
+        for i in 0..=7 {
             let id = X402MessageId::from_u8(i).unwrap();
             assert_eq!(id.to_u8(), i);
         }

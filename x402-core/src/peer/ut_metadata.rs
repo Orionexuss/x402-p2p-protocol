@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::io;
 use std::net::TcpStream;
 
 #[derive(Debug, Clone, Copy)]
@@ -43,13 +44,12 @@ impl MetadataMessage {
     ) -> std::io::Result<()> {
         let request = MetadataMessage::create_request(piece);
 
-        let payload = serde_bencode::to_bytes(&request).unwrap();
+        let payload = serde_bencode::to_bytes(&request)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
 
         let message = X402Message::new_extended(extended_message_id, payload);
 
-        write_message(stream, &message).unwrap();
-
-        Ok(())
+        write_message(stream, &message).map_err(|e| io::Error::other(e.to_string()))
     }
 
     pub fn send_ut_metadata_data(
@@ -59,7 +59,10 @@ impl MetadataMessage {
         data_block: &[u8],
     ) -> std::io::Result<()> {
         if data_block.len() > METADATA_PIECE_SIZE as usize {
-            panic!("Data block size exceeds METADATA_PIECE_SIZE");
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Data block size exceeds METADATA_PIECE_SIZE",
+            ));
         }
 
         let mut payload = serde_bencode::to_bytes(&MetadataMessage {
@@ -67,19 +70,14 @@ impl MetadataMessage {
             piece,
             total_size: Some(data_block.len() as u32),
         })
-        .unwrap();
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
 
-        println!(
-            "Sending metadata piece {:?} ",
-            serde_bencode::from_bytes::<MetadataMessage>(&payload)
-        );
+        println!("Sending metadata piece {}", piece);
 
         payload.extend_from_slice(data_block);
 
         let message = X402Message::new_extended(extended_message_id, payload);
-        write_message(stream, &message).unwrap();
-
-        Ok(())
+        write_message(stream, &message).map_err(|e| io::Error::other(e.to_string()))
     }
 
     pub fn send_ut_metadata_reject(
@@ -92,17 +90,14 @@ impl MetadataMessage {
             piece,
             total_size: None,
         })
-        .unwrap();
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
 
         let message = X402Message::new_extended(extended_message_id, payload);
-        write_message(stream, &message).unwrap();
-
-        Ok(())
+        write_message(stream, &message).map_err(|e| io::Error::other(e.to_string()))
     }
 
     pub fn receive_ut_metadata_request(message: &X402Message) -> Option<u32> {
         if message.id != X402MessageId::Extended {
-            println!("Received non-request message or wrong extended message ID");
             return None;
         }
 
@@ -120,27 +115,26 @@ impl MetadataMessage {
         expected_extended_message_id: u8,
     ) -> Option<(u32, Vec<u8>)> {
         if message.id != X402MessageId::Extended {
-            println!("Received non-data message or wrong extended message ID");
             return None;
         }
 
         if message.extended_message_id != Some(expected_extended_message_id) {
-            println!("Received message with wrong extended message ID");
             return None;
         }
 
         let data_msg: MetadataMessage = serde_bencode::from_bytes(&message.payload).ok()?;
 
         if data_msg.msg_type != MetadataMessageType::Data as u8 {
-            println!("Received non-data message");
             return None;
         }
         if data_msg.total_size > Some(METADATA_PIECE_SIZE) {
-            println!("Received metadata piece with invalid total size");
             return None;
         }
 
-        let data_block_start = serde_bencode::to_bytes(&data_msg).unwrap().len();
+        let data_block_start = serde_bencode::to_bytes(&data_msg).ok()?.len();
+        if data_block_start > message.payload.len() {
+            return None;
+        }
         let data_block = message.payload[data_block_start..].to_vec();
 
         Some((data_msg.piece, data_block))
@@ -153,7 +147,9 @@ impl MetadataMessage {
             return false;
         }
 
-        let meta: MetadataMessage = serde_bencode::from_bytes(&message.payload).unwrap();
+        let Ok(meta) = serde_bencode::from_bytes::<MetadataMessage>(&message.payload) else {
+            return false;
+        };
 
         meta.msg_type == MetadataMessageType::Reject as u8
     }
