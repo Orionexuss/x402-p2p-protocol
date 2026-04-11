@@ -400,24 +400,45 @@ impl Leecher {
             .map_err(|e| format!("Invalid keypair bytes: {}", e))
             .unwrap();
 
-        let onchain_session_result =
-            tokio::task::spawn_blocking(move || {
-                // Keep client/program alive for the full on-chain session in this worker.
-                let anchor_client = Client::new(Cluster::Devnet, &leecher_keypair);
-                let program = anchor_client
-                    .program(x402_contract::ID)
-                    .map_err(|e| format!("Failed to create Anchor program client: {}", e))?;
+        let payment = LockedPayment::new(leecher_pubkey, seeder_pubkey, &info_hash, merkle_root);
+        let onchain_info_hash = info_hash;
 
-                LockedPayment::new(leecher_pubkey, seeder_pubkey, &info_hash, merkle_root)
-                    .lock_payment(&mut stream, amount, &program)
-            })
-            .await
-            .map_err(|e| LeecherError::PaymentError(format!("Payment worker join error: {}", e)))?;
+        let onchain_session_result = tokio::task::spawn_blocking(move || {
+            // Keep client/program alive for the full on-chain session in this worker.
+            let anchor_client = Client::new(Cluster::Devnet, &leecher_keypair);
+            let program = anchor_client
+                .program(x402_contract::ID)
+                .map_err(|e| format!("Failed to create Anchor program client: {}", e))?;
+
+            LockedPayment::new(
+                leecher_pubkey,
+                seeder_pubkey,
+                &onchain_info_hash,
+                merkle_root,
+            )
+            .submit_onchain(amount, &program)
+        })
+        .await
+        .map_err(|e| LeecherError::PaymentError(format!("Payment worker join error: {}", e)))?;
 
         onchain_session_result
             .map_err(|e| LeecherError::PaymentError(format!("Failed to lock payment: {}", e)))?;
 
-        println!("LockedPayment successfully");
+        payment
+            .send_locked_payment_message(&mut stream)
+            .map_err(|e| {
+                LeecherError::PaymentError(format!(
+                    "Failed to notify peer of locked payment: {}",
+                    e
+                ))
+            })?;
+
+        if LockedPayment::receive_payment_ack(&mut stream).is_err() {
+            return Err(LeecherError::PaymentError(
+                "Failed to receive payment acknowledgment from peer".to_string(),
+            ));
+        }
+        println!("Payment locked and verified on-chain successfully!");
 
         Ok(())
     }

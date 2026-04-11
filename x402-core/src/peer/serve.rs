@@ -6,16 +6,12 @@ use std::{fs, io};
 use crate::decode_torrent;
 use crate::peer::auth_proof::AuthProof;
 use crate::peer::extension_protocol::{ExtendedHandshake, UT_METADATA_EXTENSION_ID};
-use crate::peer::leech::LeecherError;
+use crate::peer::locked_payment::LockedPayment;
 use crate::peer::protocol::{X402MessageId, read_message};
 use crate::peer::tracker_client::{AnnounceResponse, TrackerClient, TrackerClientError};
 use crate::peer::ut_metadata::{MetadataMessage, calculate_num_pieces};
 use crate::torrent::parser::calculate_info_hash;
-use anchor_client::solana_sdk::signature::Keypair;
-use anchor_client::solana_sdk::signer::EncodableKey;
-use anchor_client::solana_sdk::signer::Signer;
 use anchor_lang::prelude::Pubkey;
-use dirs::home_dir;
 use svix_ksuid::{KsuidLike, KsuidMs};
 
 use crate::peer::handshake::{Handshake, generate_peer_id};
@@ -104,8 +100,6 @@ impl Seeder {
         info_hash: [u8; 20],
         seeder_pubkey: &Pubkey,
     ) -> Result<AnnounceResponse, TrackerClientError> {
-
-
         let tracker_client = TrackerClient::new(tracker_url);
         let peer_id = self.peer_id.bytes();
         let port = self.port;
@@ -123,7 +117,11 @@ impl Seeder {
     }
 
     /// Start listening for incoming connections
-    pub fn listen(&self, torrent_manager: &TorrentManager, seeder_pubkey: &Pubkey) -> io::Result<()> {
+    pub fn listen(
+        &self,
+        torrent_manager: &TorrentManager,
+        seeder_pubkey: &Pubkey,
+    ) -> io::Result<()> {
         let addr = format!("{}:{}", self.address, self.port);
         let listener = TcpListener::bind(&addr)?;
         println!("Seeder listening on {}", addr);
@@ -209,6 +207,8 @@ impl Seeder {
         let mut peer_ut_metadata_id: Option<u8> = None;
         let mut metadata_request_queue: VecDeque<u32> = VecDeque::new();
         let mut pop_from_back = false;
+        let mut merkle_root: Option<[u8; 32]> = None;
+        let mut leecher_pubkey: Option<Pubkey> = None;
 
         // To avoid sending our handshake more than once
         let mut sent_extended_handshake = false;
@@ -352,6 +352,7 @@ impl Seeder {
                             break;
                         }
                     };
+                    leecher_pubkey = Some(auth_proof.pubkey);
 
                     if auth_proof.verify() {
                         println!("Peer authenticated successfully!");
@@ -368,7 +369,30 @@ impl Seeder {
                 }
 
                 X402MessageId::LockedPayment => {
-                    println!("Received LockedPayment (TODO: verify on-chain and conditionally ack)")
+                    if merkle_root.is_none() {
+                        merkle_root = Some(
+                            match LockedPayment::receive_locked_payment(
+                                &message,
+                                leecher_pubkey.as_ref().ok_or_else(|| {
+                                    "Missing leecher pubkey for LockedPayment verification"
+                                        .to_string()
+                                })?,
+                                seeder_pubkey,
+                                &handshake.info_hash,
+                                seeder_price,
+                            ) {
+                                Ok(root) => root,
+                                Err(_) => {
+                                    println!(
+                                        "Closing peer connection after invalid LockedPayment message"
+                                    );
+                                    break;
+                                }
+                            },
+                        );
+
+                        LockedPayment::send_payment_ack(&mut stream);
+                    }
                 }
 
                 X402MessageId::RequestBlock => {
