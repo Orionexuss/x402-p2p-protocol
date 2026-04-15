@@ -83,10 +83,9 @@ impl X402Tracker {
             });
         }
 
-        // Phase 1: Skip stake verification (will implement in Phase 2)
-        let stake = 0; // TODO: Query Solana in Phase 2
+        let stake = 0; // TODO: Query Solana
 
-        // Check economic requirements (lenient in Phase 1)
+        // Check economic requirements (lenient)
         let reputation = self.get_reputation(&peer_id).await;
         if reputation < self.policy.min_reputation {
             return Err(TrackerError::LowReputation(reputation));

@@ -43,7 +43,7 @@ impl Swarm {
             info_hash,
             seeders: HashMap::new(),
             leechers: HashMap::new(),
-            min_stake: 0,      // Default: no minimum stake (Phase 1)
+            min_stake: 0,      // Default: no minimum stake
             piece_price: 1000, // Default: 1000 lamports per piece
             created_at: SystemTime::now(),
         }
@@ -65,7 +65,7 @@ pub struct EconomicPolicy {
 impl Default for EconomicPolicy {
     fn default() -> Self {
         Self {
-            min_stake: 0, // Phase 1: no stake required
+            min_stake: 0, // no stake required
             min_reputation: -100,
             penalty_threshold: -50,
         }
@@ -91,7 +91,7 @@ pub struct AnnounceRequest {
     pub port: u16,
     pub pubkey: String, // hex encoded
     #[serde(default)]
-    pub signature: String, // hex encoded (optional for Phase 1)
+    pub signature: String, // hex encoded
     #[serde(default)]
     pub uploaded: u64,
     #[serde(default)]

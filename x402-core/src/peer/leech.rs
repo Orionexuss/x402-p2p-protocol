@@ -71,7 +71,10 @@ pub struct Leecher {
 const PROTOCOL_TOTAL_STEPS: usize = 7;
 
 fn protocol_stage(step: usize, label: &str, detail: &str) {
-    println!("  [{}/{}] {:<14} {}", step, PROTOCOL_TOTAL_STEPS, label, detail);
+    println!(
+        "  [{}/{}] {:<14} {}",
+        step, PROTOCOL_TOTAL_STEPS, label, detail
+    );
 }
 
 fn protocol_step(step: usize, id: X402MessageId, direction: &str, detail: &str) {
@@ -191,7 +194,6 @@ impl Leecher {
                         "Successfully connected to peer {}:{}",
                         peer_info.ip, peer_info.port
                     );
-                    // TODO: Request pieces and download data
                     break;
                 }
                 Err(e) => {
@@ -252,7 +254,10 @@ impl Leecher {
 
         println!("Protocol timeline:");
         protocol_stage(1, "Handshake", "session established");
-        println!("    Peer ID     : {}", hex::encode(handshake.peer_id.bytes()));
+        println!(
+            "    Peer ID     : {}",
+            hex::encode(handshake.peer_id.bytes())
+        );
         println!("    Info Hash   : {}", handshake.info_hash_hex());
         println!("    Seeder Price: {}", handshake.price);
 
@@ -282,7 +287,12 @@ impl Leecher {
                     if metadata_size > MAX_METADATA_SIZE {
                         panic!("metadata too large");
                     }
-                    protocol_step(2, X402MessageId::Extended, "<-", "received extended handshake");
+                    protocol_step(
+                        2,
+                        X402MessageId::Extended,
+                        "<-",
+                        "received extended handshake",
+                    );
                     break (peer_ut_metadata_id, metadata_size);
                 }
             };
@@ -401,17 +411,32 @@ impl Leecher {
                 )));
             }
         } else {
-            protocol_step(2, X402MessageId::Extended, "--", "skipped (torrent metadata is local)");
+            protocol_step(
+                2,
+                X402MessageId::Extended,
+                "--",
+                "skipped (torrent metadata is local)",
+            );
         }
 
         let auth_proof = AuthProof::create(keypair, AuthProof::generate_nonce());
         auth_proof.send(&mut stream)?;
-        protocol_step(3, X402MessageId::AuthProof, "->", "sent authentication proof");
+        protocol_step(
+            3,
+            X402MessageId::AuthProof,
+            "->",
+            "sent authentication proof",
+        );
 
         let auth_response = read_message(&mut stream).unwrap().id;
 
         if auth_response == X402MessageId::AuthOk {
-            protocol_step(4, X402MessageId::AuthOk, "<-", "authentication accepted by seeder");
+            protocol_step(
+                4,
+                X402MessageId::AuthOk,
+                "<-",
+                "authentication accepted by seeder",
+            );
         } else {
             println!("Peer authentication failed!");
             return Err(LeecherError::AuthError());
@@ -429,9 +454,7 @@ impl Leecher {
 
         // Pre-compute a Merkle proof for every secret so the seeder can
         // verify each hash commitment against the on-chain root.
-        let proofs: Vec<Vec<[u8; 32]>> = (0..secrets.len())
-            .map(|i| get_proof(&tree, i))
-            .collect();
+        let proofs: Vec<Vec<[u8; 32]>> = (0..secrets.len()).map(|i| get_proof(&tree, i)).collect();
 
         let amount = handshake.price;
 
@@ -454,12 +477,9 @@ impl Leecher {
 
         let payment = LockedPayment::new(leecher_pubkey, seeder_pubkey, &info_hash, merkle_root);
         let onchain_info_hash = info_hash;
-        let total_secrets = pieces_length
-            .ok_or_else(|| {
-                LeecherError::PaymentError(
-                    "Missing piece count before locking payment".to_string(),
-                )
-            })?;
+        let total_secrets = pieces_length.ok_or_else(|| {
+            LeecherError::PaymentError("Missing piece count before locking payment".to_string())
+        })?;
 
         let onchain_session_result = tokio::task::spawn_blocking(move || {
             // Keep client/program alive for the full on-chain session in this worker.
@@ -490,17 +510,32 @@ impl Leecher {
                     e
                 ))
             })?;
-        protocol_step(5, X402MessageId::LockedPayment, "->", "sent merkle-root commitment");
+        protocol_step(
+            5,
+            X402MessageId::LockedPayment,
+            "->",
+            "sent merkle-root commitment",
+        );
 
         if LockedPayment::receive_payment_ack(&mut stream).is_err() {
             return Err(LeecherError::PaymentError(
                 "Failed to receive payment acknowledgment from peer".to_string(),
             ));
         }
-        protocol_step(6, X402MessageId::PaymentAck, "<-", "payment acknowledged by seeder");
+        protocol_step(
+            6,
+            X402MessageId::PaymentAck,
+            "<-",
+            "payment acknowledged by seeder",
+        );
         println!("Payment locked and verified on-chain successfully!");
 
-        protocol_step(7, X402MessageId::PieceExchange, "..", "starting encrypted piece exchange");
+        protocol_step(
+            7,
+            X402MessageId::PieceExchange,
+            "..",
+            "starting encrypted piece exchange",
+        );
 
         let piece_count = pieces_length.ok_or_else(|| {
             LeecherError::PieceExchangeError(
@@ -673,10 +708,16 @@ impl Leecher {
         let mut output = Vec::new();
         for idx in 0..(piece_count - 1) as usize {
             let key = decrypt_keys[idx].ok_or_else(|| {
-                LeecherError::PieceExchangeError(format!("Missing decryption key for piece {}", idx))
+                LeecherError::PieceExchangeError(format!(
+                    "Missing decryption key for piece {}",
+                    idx
+                ))
             })?;
             let ciphertext = encrypted_pieces[idx].as_ref().ok_or_else(|| {
-                LeecherError::PieceExchangeError(format!("Missing encrypted data for piece {}", idx))
+                LeecherError::PieceExchangeError(format!(
+                    "Missing encrypted data for piece {}",
+                    idx
+                ))
             })?;
 
             let plain = PieceExchange::decrypt(&key, ciphertext);
@@ -685,8 +726,9 @@ impl Leecher {
 
         output.extend_from_slice(&final_plain.data);
 
-        fs::write(&self.output_path, &output)
-            .map_err(|e| LeecherError::PieceExchangeError(format!("Failed to write output: {}", e)))?;
+        fs::write(&self.output_path, &output).map_err(|e| {
+            LeecherError::PieceExchangeError(format!("Failed to write output: {}", e))
+        })?;
 
         println!(
             "Piece exchange complete: wrote {} bytes to {}",

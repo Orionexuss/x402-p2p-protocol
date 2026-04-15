@@ -91,7 +91,7 @@ impl TrackerClient {
             peer_id: hex::encode(peer_id),
             port,
             pubkey: bs58::encode(pubkey).into_string(),
-            signature: None, // TODO: Add signature in Phase 2
+            signature: None, // TODO: Add signature
             uploaded: 0,
             downloaded: 0,
             left,
