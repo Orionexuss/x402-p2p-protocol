@@ -332,7 +332,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             println!("\nStarting listener...");
-            if let Err(e) = seeder.listen(&torrent_manager, &keypair.pubkey()) {
+            if let Err(e) = seeder.listen(&torrent_manager, &keypair.pubkey(), &keypair) {
                 eprintln!("Error starting seeder: {}", e);
                 std::process::exit(1);
             }

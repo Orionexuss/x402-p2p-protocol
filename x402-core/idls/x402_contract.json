@@ -8,6 +8,107 @@
   },
   "instructions": [
     {
+      "name": "claim_by_secrets",
+      "discriminator": [
+        33,
+        242,
+        232,
+        207,
+        180,
+        126,
+        183,
+        213
+      ],
+      "accounts": [
+        {
+          "name": "seeder",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "escrow"
+          ]
+        },
+        {
+          "name": "leecher",
+          "writable": true
+        },
+        {
+          "name": "usdc_mint"
+        },
+        {
+          "name": "seeder_usdc_ata",
+          "writable": true
+        },
+        {
+          "name": "leecher_usdc_ata",
+          "writable": true
+        },
+        {
+          "name": "escrow",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  101,
+                  115,
+                  99,
+                  114,
+                  111,
+                  119,
+                  95,
+                  118,
+                  50
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "escrow.leecher",
+                "account": "PaymentEscrow"
+              },
+              {
+                "kind": "account",
+                "path": "seeder"
+              },
+              {
+                "kind": "arg",
+                "path": "infohash"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "infohash",
+          "type": {
+            "array": [
+              "u8",
+              20
+            ]
+          }
+        },
+        {
+          "name": "claims",
+          "type": {
+            "vec": {
+              "defined": {
+                "name": "SecretClaim"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "lock_payment",
       "discriminator": [
         170,
@@ -137,7 +238,10 @@
                   99,
                   114,
                   111,
-                  119
+                  119,
+                  95,
+                  118,
+                  50
                 ]
               },
               {
@@ -211,6 +315,10 @@
               32
             ]
           }
+        },
+        {
+          "name": "total_secrets",
+          "type": "u32"
         }
       ]
     },
@@ -289,7 +397,93 @@
         },
         {
           "name": "seeder_usdc_ata",
-          "writable": true
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "seeder"
+              },
+              {
+                "kind": "const",
+                "value": [
+                  6,
+                  221,
+                  246,
+                  225,
+                  215,
+                  101,
+                  161,
+                  147,
+                  217,
+                  203,
+                  225,
+                  70,
+                  206,
+                  235,
+                  121,
+                  172,
+                  28,
+                  180,
+                  133,
+                  237,
+                  95,
+                  91,
+                  55,
+                  145,
+                  58,
+                  140,
+                  245,
+                  133,
+                  126,
+                  255,
+                  0,
+                  169
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "usdc_mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
         },
         {
           "name": "escrow",
@@ -304,7 +498,10 @@
                   99,
                   114,
                   111,
-                  119
+                  119,
+                  95,
+                  118,
+                  50
                 ]
               },
               {
@@ -325,6 +522,14 @@
         {
           "name": "vault",
           "writable": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "associated_token_program",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
         },
         {
           "name": "token_program"
@@ -378,6 +583,21 @@
       "code": 6003,
       "name": "InvalidVaultOwner",
       "msg": "Vault owner does not match escrow PDA"
+    },
+    {
+      "code": 6004,
+      "name": "InvalidTotalSecrets",
+      "msg": "Total secrets must be greater than zero"
+    },
+    {
+      "code": 6005,
+      "name": "NoSecretClaims",
+      "msg": "At least one secret claim is required"
+    },
+    {
+      "code": 6006,
+      "name": "TooManySecretClaims",
+      "msg": "Too many secret claims in one transaction"
     }
   ],
   "types": [
@@ -416,6 +636,10 @@
             "type": "u64"
           },
           {
+            "name": "total_secrets",
+            "type": "u32"
+          },
+          {
             "name": "merkle_root",
             "type": {
               "array": [
@@ -427,6 +651,38 @@
           {
             "name": "bump",
             "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SecretClaim",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "index",
+            "type": "u32"
+          },
+          {
+            "name": "secret",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "proof",
+            "type": {
+              "vec": {
+                "array": [
+                  "u8",
+                  32
+                ]
+              }
+            }
           }
         ]
       }

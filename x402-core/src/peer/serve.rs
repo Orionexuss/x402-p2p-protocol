@@ -8,13 +8,14 @@ use std::{fs, io};
 use crate::decode_torrent;
 use crate::peer::auth_proof::AuthProof;
 use crate::peer::extension_protocol::{ExtendedHandshake, UT_METADATA_EXTENSION_ID};
-use crate::peer::locked_payment::LockedPayment;
+use crate::peer::locked_payment::{LockedPayment, SecretClaimInput};
 use crate::peer::piece_exchange::{PieceExchange, PieceExchangeMsgKind, RequestPiece};
 use crate::peer::protocol::{X402MessageId, read_message};
 use crate::peer::utils::merkletree::verify_proof;
 use crate::peer::tracker_client::{AnnounceResponse, TrackerClient, TrackerClientError};
 use crate::peer::ut_metadata::{MetadataMessage, calculate_num_pieces};
 use crate::torrent::parser::calculate_info_hash;
+use anchor_client::solana_sdk::signature::Keypair;
 use anchor_lang::prelude::Pubkey;
 use svix_ksuid::{KsuidLike, KsuidMs};
 
@@ -310,6 +311,7 @@ impl Seeder {
         &self,
         torrent_manager: &TorrentManager,
         seeder_pubkey: &Pubkey,
+        seeder_keypair: &Keypair,
     ) -> io::Result<()> {
         let addr = format!("{}:{}", self.address, self.port);
         let listener = TcpListener::bind(&addr)?;
@@ -321,7 +323,9 @@ impl Seeder {
                 Ok(stream) => {
                     println!("\n============================================================");
                     println!("Incoming connection from {}", stream.peer_addr()?);
-                    if let Err(e) = self.handle_connection(stream, torrent_manager, seeder_pubkey) {
+                    if let Err(e) =
+                        self.handle_connection(stream, torrent_manager, seeder_pubkey, seeder_keypair)
+                    {
                         eprintln!("Connection handler internal error: {}", e);
                     }
                 }
@@ -340,6 +344,7 @@ impl Seeder {
         mut stream: TcpStream,
         torrent_manager: &TorrentManager,
         seeder_pubkey: &Pubkey,
+        seeder_keypair: &Keypair,
     ) -> Result<(), String> {
         println!("Protocol timeline:");
         println!("  waiting for initial handshake...");
@@ -402,6 +407,8 @@ impl Seeder {
         let mut piece_request_queue: VecDeque<RequestPiece> = VecDeque::new();
         let mut pop_piece_from_back = false;
         let mut committed_piece_hashes: HashMap<u32, [u8; 32]> = HashMap::new();
+        let mut piece_proofs: HashMap<u32, Vec<[u8; 32]>> = HashMap::new();
+        let mut revealed_secrets: HashMap<u32, [u8; 32]> = HashMap::new();
         let mut piece_keys: HashMap<u32, [u8; 32]> = HashMap::new();
         let mut highest_requested_piece: Option<u32> = None;
         let mut announced_piece_exchange = false;
@@ -577,6 +584,9 @@ impl Seeder {
                 X402MessageId::LockedPayment => {
                     if merkle_root.is_none() {
                         protocol_step(5, X402MessageId::LockedPayment, "<-", "received locked-payment root");
+                        let expected_piece_count = torrent_manager
+                            .piece_count(&handshake.info_hash)
+                            .ok_or_else(|| "Missing payload store for locked payment check".to_string())?;
                         merkle_root = Some(
                             match LockedPayment::receive_locked_payment(
                                 &message,
@@ -587,6 +597,7 @@ impl Seeder {
                                 seeder_pubkey,
                                 &handshake.info_hash,
                                 seeder_price,
+                                expected_piece_count,
                             ) {
                                 Ok(root) => root,
                                 Err(_) => {
@@ -702,6 +713,9 @@ impl Seeder {
 
                                 let is_new_commitment =
                                     committed_piece_hashes.insert(piece_index, request.hash).is_none();
+                                piece_proofs
+                                    .entry(piece_index)
+                                    .or_insert_with(|| request.proof.clone());
                                 highest_requested_piece = match highest_requested_piece {
                                     Some(current_max) => Some(current_max.max(piece_index)),
                                     None => Some(piece_index),
@@ -762,6 +776,7 @@ impl Seeder {
                                     keep_connection = false;
                                     break;
                                 }
+                                revealed_secrets.insert(prev_index, revealed_secret);
 
                                 let Some(prev_key) = piece_keys.remove(&prev_index) else {
                                     println!(
@@ -823,6 +838,7 @@ impl Seeder {
                                 println!("Closing peer connection after invalid final secret");
                                 break;
                             }
+                            revealed_secrets.insert(last_piece_index, final_secret.secret);
 
                             let piece_bytes = match torrent_manager
                                 .read_piece_bytes(&handshake.info_hash, last_piece_index)
@@ -848,6 +864,72 @@ impl Seeder {
                             }
                             println!();
                             println!("Piece exchange completed for {}", handshake.info_hash_hex());
+
+                            let mut claims: Vec<SecretClaimInput> = piece_proofs
+                                .iter()
+                                .filter_map(|(idx, proof)| {
+                                    revealed_secrets.get(idx).map(|secret| SecretClaimInput {
+                                        index: *idx,
+                                        secret: *secret,
+                                        proof: proof.clone(),
+                                    })
+                                })
+                                .collect();
+                            claims.sort_by_key(|c| c.index);
+
+                            if !claims.is_empty() {
+                                if let (Some(leecher), Some(root)) = (leecher_pubkey, merkle_root) {
+                                    let info_hash = handshake.info_hash;
+                                    let seeder_pubkey = *seeder_pubkey;
+                                    let seeder_keypair_bytes = seeder_keypair.to_bytes();
+
+                                    let settlement_result = std::thread::spawn(move || {
+                                        let seeder_signer = Keypair::try_from(&seeder_keypair_bytes[..])
+                                            .map_err(|e| {
+                                                format!("Failed to reconstruct seeder keypair: {}", e)
+                                            })?;
+
+                                        let payment_settlement =
+                                            LockedPayment::new(leecher, seeder_pubkey, &info_hash, root);
+
+                                        payment_settlement
+                                            .claim_by_secrets_onchain_devnet(claims, &seeder_signer)
+                                    })
+                                    .join()
+                                    .map_err(|_| "Settlement thread panicked".to_string());
+
+                                    match settlement_result {
+                                        Ok(Ok(signature)) => {
+                                            println!(
+                                                "On-chain claim settled with signature: {}",
+                                                signature
+                                            );
+                                        }
+                                        Ok(Err(e)) => {
+                                            eprintln!(
+                                                "Failed to settle on-chain claim for {}: {}",
+                                                handshake.info_hash_hex(),
+                                                e
+                                            );
+                                        }
+                                        Err(e) => {
+                                            eprintln!(
+                                                "Failed to settle on-chain claim for {}: {}",
+                                                handshake.info_hash_hex(),
+                                                e
+                                            );
+                                        }
+                                    }
+                                } else {
+                                    eprintln!(
+                                        "Skipping on-chain claim settlement: missing leecher pubkey or merkle root"
+                                    );
+                                }
+                            } else {
+                                eprintln!(
+                                    "Skipping on-chain claim settlement: no revealed secrets were collected"
+                                );
+                            }
                             break;
                         }
 

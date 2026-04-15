@@ -454,6 +454,12 @@ impl Leecher {
 
         let payment = LockedPayment::new(leecher_pubkey, seeder_pubkey, &info_hash, merkle_root);
         let onchain_info_hash = info_hash;
+        let total_secrets = pieces_length
+            .ok_or_else(|| {
+                LeecherError::PaymentError(
+                    "Missing piece count before locking payment".to_string(),
+                )
+            })?;
 
         let onchain_session_result = tokio::task::spawn_blocking(move || {
             // Keep client/program alive for the full on-chain session in this worker.
@@ -468,7 +474,7 @@ impl Leecher {
                 &onchain_info_hash,
                 merkle_root,
             )
-            .submit_onchain(amount, &program)
+            .submit_onchain(amount, total_secrets, &program)
         })
         .await
         .map_err(|e| LeecherError::PaymentError(format!("Payment worker join error: {}", e)))?;
