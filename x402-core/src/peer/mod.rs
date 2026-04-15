@@ -3,6 +3,7 @@ pub mod extension_protocol;
 pub mod handshake;
 pub mod leech;
 pub mod locked_payment;
+pub mod piece_exchange;
 pub mod protocol;
 pub mod serve;
 pub mod tracker_client;

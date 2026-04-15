@@ -110,7 +110,6 @@ impl<'a> LockedPayment<'a> {
             })
             .send()
             .map_err(|e| e.to_string())?;
-        println!("LockPayment transaction sent with signature: {}", signature);
 
         Ok(())
     }

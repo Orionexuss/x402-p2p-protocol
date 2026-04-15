@@ -2,10 +2,11 @@ use crate::peer::auth_proof::AuthProof;
 use crate::peer::extension_protocol::ExtendedHandshake;
 use crate::peer::handshake::{generate_peer_id, Handshake};
 use crate::peer::locked_payment::LockedPayment;
+use crate::peer::piece_exchange::PieceExchange;
 use crate::peer::protocol::X402MessageId;
 use crate::peer::tracker_client::{PeerInfo, TrackerClient};
 use crate::peer::ut_metadata::{calculate_num_pieces, MetadataMessage, METADATA_PIECE_SIZE};
-use crate::peer::utils::merkletree::{hash, MerkleTree};
+use crate::peer::utils::merkletree::{get_proof, hash, MerkleTree};
 use crate::read_message;
 use crate::torrent::types::Info;
 use anchor_client::solana_sdk::signature::Keypair;
@@ -13,7 +14,9 @@ use anchor_client::{Client, Cluster};
 use anchor_lang::prelude::{declare_program, Pubkey};
 use sha1::Digest;
 use std::collections::HashSet;
+use std::fs;
 use std::io;
+use std::io::Write;
 use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -51,6 +54,9 @@ pub enum LeecherError {
 
     #[error("Payment protocol error: {0}")]
     PaymentError(String),
+
+    #[error("Piece exchange error: {0}")]
+    PieceExchangeError(String),
 }
 
 pub struct Leecher {
@@ -60,6 +66,41 @@ pub struct Leecher {
     tracker_url: String,
     output_path: PathBuf,
     total_size: u64,
+}
+
+const PROTOCOL_TOTAL_STEPS: usize = 7;
+
+fn protocol_stage(step: usize, label: &str, detail: &str) {
+    println!("  [{}/{}] {:<14} {}", step, PROTOCOL_TOTAL_STEPS, label, detail);
+}
+
+fn protocol_step(step: usize, id: X402MessageId, direction: &str, detail: &str) {
+    println!(
+        "  [{}/{}] {:<14} ({:>2}) {} {}",
+        step,
+        PROTOCOL_TOTAL_STEPS,
+        match id {
+            X402MessageId::AuthProof => "AuthProof",
+            X402MessageId::AuthOk => "AuthOk",
+            X402MessageId::LockedPayment => "LockedPayment",
+            X402MessageId::PaymentAck => "PaymentAck",
+            X402MessageId::PieceExchange => "PieceExchange",
+            X402MessageId::Extended => "Extended",
+        },
+        id.to_u8(),
+        direction,
+        detail
+    );
+}
+
+fn print_piece_progress(prefix: &str, done: u32, total: u32) {
+    let total = total.max(1);
+    let width = 28usize;
+    let filled = ((done as usize) * width) / (total as usize);
+    let bar = format!("{}{}", "#".repeat(filled), "-".repeat(width - filled));
+    let pct = (done as f64 / total as f64) * 100.0;
+    print!("\r{} [{}] {}/{} ({:>5.1}%)", prefix, bar, done, total, pct);
+    let _ = io::stdout().flush();
 }
 
 impl Leecher {
@@ -203,19 +244,21 @@ impl Leecher {
         let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5))
             .map_err(|e| LeecherError::ConnectionFailed(e.to_string()))?;
 
-        println!("Connected! Performing handshake...");
+        println!("Connected. Starting protocol session...");
 
         // Perform BitTorrent handshake
         let handshake = Handshake::exchange(&mut stream, self.info_hash, self.peer_id, 0)
             .map_err(LeecherError::HandshakeFailed)?;
 
-        println!("Handshake successful!");
-        println!("  Peer ID: {}", hex::encode(handshake.peer_id.bytes()));
-        println!("  Info Hash: {}", handshake.info_hash_hex());
-        println!("  Seeder Price: {}", handshake.price);
+        println!("Protocol timeline:");
+        protocol_stage(1, "Handshake", "session established");
+        println!("    Peer ID     : {}", hex::encode(handshake.peer_id.bytes()));
+        println!("    Info Hash   : {}", handshake.info_hash_hex());
+        println!("    Seeder Price: {}", handshake.price);
 
         // implement BEP 10
         if is_magnet {
+            protocol_step(2, X402MessageId::Extended, "->", "sent extended handshake");
             ExtendedHandshake::new()
                 .send_extended_handshake(&mut stream)
                 .map_err(|e| LeecherError::MetadataError(e.to_string()))?;
@@ -239,6 +282,7 @@ impl Leecher {
                     if metadata_size > MAX_METADATA_SIZE {
                         panic!("metadata too large");
                     }
+                    protocol_step(2, X402MessageId::Extended, "<-", "received extended handshake");
                     break (peer_ut_metadata_id, metadata_size);
                 }
             };
@@ -356,16 +400,18 @@ impl Leecher {
                     hex::encode(self.info_hash)
                 )));
             }
+        } else {
+            protocol_step(2, X402MessageId::Extended, "--", "skipped (torrent metadata is local)");
         }
 
         let auth_proof = AuthProof::create(keypair, AuthProof::generate_nonce());
         auth_proof.send(&mut stream)?;
-        println!("Sent authentication proof to peer.");
+        protocol_step(3, X402MessageId::AuthProof, "->", "sent authentication proof");
 
         let auth_response = read_message(&mut stream).unwrap().id;
 
         if auth_response == X402MessageId::AuthOk {
-            println!("Peer authenticated successfully!");
+            protocol_step(4, X402MessageId::AuthOk, "<-", "authentication accepted by seeder");
         } else {
             println!("Peer authentication failed!");
             return Err(LeecherError::AuthError());
@@ -380,6 +426,12 @@ impl Leecher {
         let leaves: Vec<[u8; 32]> = secrets.iter().map(|s| hash(s)).collect();
         let tree = MerkleTree::new(leaves);
         let merkle_root = tree.root();
+
+        // Pre-compute a Merkle proof for every secret so the seeder can
+        // verify each hash commitment against the on-chain root.
+        let proofs: Vec<Vec<[u8; 32]>> = (0..secrets.len())
+            .map(|i| get_proof(&tree, i))
+            .collect();
 
         let amount = handshake.price;
 
@@ -432,13 +484,209 @@ impl Leecher {
                     e
                 ))
             })?;
+        protocol_step(5, X402MessageId::LockedPayment, "->", "sent merkle-root commitment");
 
         if LockedPayment::receive_payment_ack(&mut stream).is_err() {
             return Err(LeecherError::PaymentError(
                 "Failed to receive payment acknowledgment from peer".to_string(),
             ));
         }
+        protocol_step(6, X402MessageId::PaymentAck, "<-", "payment acknowledged by seeder");
         println!("Payment locked and verified on-chain successfully!");
+
+        protocol_step(7, X402MessageId::PieceExchange, "..", "starting encrypted piece exchange");
+
+        let piece_count = pieces_length.ok_or_else(|| {
+            LeecherError::PieceExchangeError(
+                "Missing piece count before starting piece exchange".to_string(),
+            )
+        })?;
+
+        if piece_count == 0 {
+            return Err(LeecherError::PieceExchangeError(
+                "Torrent has zero pieces".to_string(),
+            ));
+        }
+
+        const MAX_PIECE_PIPELINE: u32 = 8;
+        let pipeline = MAX_PIECE_PIPELINE.min(piece_count).max(1);
+
+        let mut in_flight: HashSet<u32> = HashSet::new();
+        let mut encrypted_pieces = vec![None::<Vec<u8>>; piece_count as usize];
+        let mut decrypt_keys = vec![None::<[u8; 32]>; piece_count as usize];
+        let mut next_request = 0u32;
+
+        while in_flight.len() < pipeline as usize && next_request < piece_count {
+            let hash_for_piece = hash(&secrets[next_request as usize]);
+            let secret_for_previous = if next_request == 0 {
+                None
+            } else {
+                Some(&secrets[(next_request - 1) as usize])
+            };
+
+            PieceExchange::send_request(
+                &mut stream,
+                next_request,
+                &hash_for_piece,
+                secret_for_previous,
+                &proofs[next_request as usize],
+            )
+            .map_err(|e| LeecherError::PieceExchangeError(e.to_string()))?;
+
+            in_flight.insert(next_request);
+            next_request += 1;
+        }
+
+        let mut received_encrypted = 0u32;
+        let mut received_keys = 0u32;
+        let expected_keys = piece_count.saturating_sub(1);
+        print_piece_progress("  transfer recv", 0, piece_count);
+
+        while received_encrypted < piece_count || received_keys < expected_keys {
+            let msg = read_message(&mut stream)
+                .map_err(|e| LeecherError::PieceExchangeError(e.to_string()))?;
+
+            if msg.id != X402MessageId::PieceExchange {
+                continue;
+            }
+
+            match PieceExchange::msg_kind(&msg) {
+                Some(crate::peer::piece_exchange::PieceExchangeMsgKind::EncryptedPiece) => {
+                    let encrypted_piece = PieceExchange::recv_encrypted_piece(&msg)
+                        .map_err(|e| LeecherError::PieceExchangeError(e.to_string()))?;
+
+                    let idx = encrypted_piece.piece_index as usize;
+                    if idx >= encrypted_pieces.len() {
+                        return Err(LeecherError::PieceExchangeError(format!(
+                            "Received out-of-range encrypted piece {}",
+                            encrypted_piece.piece_index
+                        )));
+                    }
+
+                    if encrypted_pieces[idx].is_none() {
+                        encrypted_pieces[idx] = Some(encrypted_piece.ciphertext);
+                        received_encrypted += 1;
+                        print_piece_progress("  transfer recv", received_encrypted, piece_count);
+                    }
+
+                    in_flight.remove(&(idx as u32));
+                }
+                Some(crate::peer::piece_exchange::PieceExchangeMsgKind::KeyReveal) => {
+                    let key_reveal = PieceExchange::recv_key_reveal(&msg)
+                        .map_err(|e| LeecherError::PieceExchangeError(e.to_string()))?;
+
+                    let next_idx_u32 = key_reveal.next_piece.piece_index;
+                    let next_idx = next_idx_u32 as usize;
+                    if next_idx >= encrypted_pieces.len() {
+                        return Err(LeecherError::PieceExchangeError(format!(
+                            "Received out-of-range key reveal for next piece {}",
+                            next_idx_u32
+                        )));
+                    }
+
+                    let prev_idx_u32 = next_idx_u32.saturating_sub(1);
+                    let prev_idx = prev_idx_u32 as usize;
+                    if prev_idx >= decrypt_keys.len() {
+                        return Err(LeecherError::PieceExchangeError(format!(
+                            "Received out-of-range key for piece {}",
+                            prev_idx_u32
+                        )));
+                    }
+
+                    if decrypt_keys[prev_idx].is_none() {
+                        decrypt_keys[prev_idx] = Some(key_reveal.key);
+                        received_keys += 1;
+                    }
+
+                    if encrypted_pieces[next_idx].is_none() {
+                        encrypted_pieces[next_idx] = Some(key_reveal.next_piece.ciphertext);
+                        received_encrypted += 1;
+                        print_piece_progress("  transfer recv", received_encrypted, piece_count);
+                    }
+
+                    in_flight.remove(&next_idx_u32);
+                }
+                _ => continue,
+            }
+
+            while in_flight.len() < pipeline as usize && next_request < piece_count {
+                let hash_for_piece = hash(&secrets[next_request as usize]);
+                let secret_for_previous = if next_request == 0 {
+                    None
+                } else {
+                    Some(&secrets[(next_request - 1) as usize])
+                };
+
+                PieceExchange::send_request(
+                    &mut stream,
+                    next_request,
+                    &hash_for_piece,
+                    secret_for_previous,
+                    &proofs[next_request as usize],
+                )
+                .map_err(|e| LeecherError::PieceExchangeError(e.to_string()))?;
+
+                in_flight.insert(next_request);
+                next_request += 1;
+            }
+        }
+
+        println!();
+
+        PieceExchange::send_final_secret(&mut stream, &secrets[(piece_count - 1) as usize])
+            .map_err(|e| LeecherError::PieceExchangeError(e.to_string()))?;
+
+        let final_plain = loop {
+            let msg = read_message(&mut stream)
+                .map_err(|e| LeecherError::PieceExchangeError(e.to_string()))?;
+
+            if msg.id != X402MessageId::PieceExchange {
+                continue;
+            }
+
+            if !matches!(
+                PieceExchange::msg_kind(&msg),
+                Some(crate::peer::piece_exchange::PieceExchangeMsgKind::PlainPiece)
+            ) {
+                continue;
+            }
+
+            let plain_piece = PieceExchange::recv_plain_piece(&msg)
+                .map_err(|e| LeecherError::PieceExchangeError(e.to_string()))?;
+            break plain_piece;
+        };
+
+        if final_plain.piece_index != piece_count - 1 {
+            return Err(LeecherError::PieceExchangeError(format!(
+                "Final plain piece index mismatch: got {}, expected {}",
+                final_plain.piece_index,
+                piece_count - 1
+            )));
+        }
+
+        let mut output = Vec::new();
+        for idx in 0..(piece_count - 1) as usize {
+            let key = decrypt_keys[idx].ok_or_else(|| {
+                LeecherError::PieceExchangeError(format!("Missing decryption key for piece {}", idx))
+            })?;
+            let ciphertext = encrypted_pieces[idx].as_ref().ok_or_else(|| {
+                LeecherError::PieceExchangeError(format!("Missing encrypted data for piece {}", idx))
+            })?;
+
+            let plain = PieceExchange::decrypt(&key, ciphertext);
+            output.extend_from_slice(&plain);
+        }
+
+        output.extend_from_slice(&final_plain.data);
+
+        fs::write(&self.output_path, &output)
+            .map_err(|e| LeecherError::PieceExchangeError(format!("Failed to write output: {}", e)))?;
+
+        println!(
+            "Piece exchange complete: wrote {} bytes to {}",
+            output.len(),
+            self.output_path.display()
+        );
 
         Ok(())
     }

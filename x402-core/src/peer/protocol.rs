@@ -10,10 +10,7 @@ pub enum X402MessageId {
     AuthOk = 1,
     LockedPayment = 2,
     PaymentAck = 3,
-    RequestBlock = 4,
-    PieceChunk = 5,
-    PaymentReveal = 6,
-    Have = 7,
+    PieceExchange = 4,
     Extended = 20,
 }
 
@@ -25,10 +22,7 @@ impl X402MessageId {
             1 => Ok(X402MessageId::AuthOk),
             2 => Ok(X402MessageId::LockedPayment),
             3 => Ok(X402MessageId::PaymentAck),
-            4 => Ok(X402MessageId::RequestBlock),
-            5 => Ok(X402MessageId::PieceChunk),
-            6 => Ok(X402MessageId::PaymentReveal),
-            7 => Ok(X402MessageId::Have),
+            4 => Ok(X402MessageId::PieceExchange),
             20 => Ok(X402MessageId::Extended),
             _ => Err(ProtocolError::InvalidMessageId(value)),
         }
@@ -205,12 +199,6 @@ mod tests {
             X402MessageId::PaymentAck
         );
         assert!(X402MessageId::from_u8(8).is_err());
-    }
-
-    #[test]
-    fn test_message_length() {
-        let msg = X402Message::new(X402MessageId::Have, vec![1, 2, 3, 4]);
-        assert_eq!(msg.message_length(), 5); // 1 byte ID + 4 bytes payload
     }
 
     #[test]
