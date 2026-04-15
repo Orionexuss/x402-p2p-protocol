@@ -9,8 +9,8 @@ describe("x402-contract", () => {
   const program = anchor.workspace.x402Contract as Program<X402Contract>;
 
   it("Is initialized!", async () => {
-    // Add your test here.
+    /* // Add your test here.
     const tx = await program.methods.initialize().rpc();
-    console.log("Your transaction signature", tx);
+    console.log("Your transaction signature", tx); */
   });
 });
