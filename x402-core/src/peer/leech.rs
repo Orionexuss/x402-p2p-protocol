@@ -163,7 +163,7 @@ impl Leecher {
             response.complete, response.incomplete
         );
         println!("Min stake: {} lamports", response.min_stake);
-        println!("Piece price: {} USDC", response.piece_price);
+        println!("Price: {} USDC", response.price);
         println!();
 
         // 2. Get all available peers (seeders first)

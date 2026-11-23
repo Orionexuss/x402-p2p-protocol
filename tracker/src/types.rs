@@ -33,7 +33,7 @@ pub struct Swarm {
     pub seeders: HashMap<(IpAddr, u16), PeerEntry>,
     pub leechers: HashMap<(IpAddr, u16), PeerEntry>,
     pub min_stake: u64,
-    pub piece_price: u64,
+    pub price: u64,
     pub created_at: SystemTime,
 }
 
@@ -43,8 +43,8 @@ impl Swarm {
             info_hash,
             seeders: HashMap::new(),
             leechers: HashMap::new(),
-            min_stake: 0,      // Default: no minimum stake
-            piece_price: 1000, // Default: 1000 lamports per piece
+            min_stake: 0, // Default: no minimum stake
+            price: 1000,  // Default: 1000 lamports per piece
             created_at: SystemTime::now(),
         }
     }
@@ -121,7 +121,7 @@ pub struct PeerInfo {
 pub struct AnnounceResponse {
     pub interval: u32,
     pub min_stake: u64,
-    pub piece_price: u64,
+    pub price: u64,
     pub seeders: Vec<PeerInfo>,
     pub leechers: Vec<PeerInfo>,
     pub complete: usize,   // number of seeders

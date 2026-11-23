@@ -50,7 +50,7 @@ pub struct PeerInfo {
 pub struct AnnounceResponse {
     pub interval: u32,
     pub min_stake: u64,
-    pub piece_price: u64,
+    pub price: u64,
     pub seeders: Vec<PeerInfo>,
     pub leechers: Vec<PeerInfo>,
     pub complete: usize,

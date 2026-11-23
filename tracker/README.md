@@ -86,7 +86,7 @@ Response body:
 {
   "interval": 1800,
   "min_stake": 0,
-  "piece_price": 1000,
+  "price": 1000,
   "seeders": [],
   "leechers": [],
   "complete": 0,

@@ -75,7 +75,7 @@ impl X402Tracker {
             return Ok(AnnounceResponse {
                 interval: 1800,
                 min_stake: self.policy.min_stake,
-                piece_price: 1000,
+                price: 1000,
                 seeders: vec![],
                 leechers: vec![],
                 complete: 0,
@@ -142,7 +142,7 @@ impl X402Tracker {
         Ok(AnnounceResponse {
             interval: 1800, // 30 minutes
             min_stake: swarm.min_stake,
-            piece_price: swarm.piece_price,
+            price: swarm.price,
             seeders,
             leechers,
             complete,
@@ -174,7 +174,7 @@ impl X402Tracker {
         Ok(AnnounceResponse {
             interval: 1800,
             min_stake: swarm.min_stake,
-            piece_price: swarm.piece_price,
+            price: swarm.price,
             seeders,
             leechers,
             complete: swarm.seeders.len(),
